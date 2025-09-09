@@ -150,7 +150,7 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 
 	std::vector<TickRecord*> vReturn = {};
 
-	// Networking corrected latency (what server "currently" sees our cmd stream at)
+	// networking corrected latency (what server "currently" sees our cmd stream at)
 	float flCorrect = std::clamp(GetReal(MAX_FLOWS, false) + ROUND_TO_TICKS(GetFakeInterp()), 0.f, m_flMaxUnlag);
 	int iServerTick = m_iTickCount + GetAnticipatedChoke() + Vars::Backtrack::Offset.Value + TIME_TO_TICKS(GetReal(FLOW_OUTGOING));
 
@@ -161,22 +161,22 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 
 	for (auto pRecord : vRecords)
 	{
-		// Sim time including external modifier (used by melee swing sim to offset predicted path relative to chosen record list)
+		// sim time including external modifier (used by melee swing sim to offset predicted path relative to chosen record list)
 		float flRecordTime = pRecord->m_flSimTime + flTimeMod;
 		float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(flRecordTime));
 
-		// Distinguish past vs future; negative delta => past relative to corrected time domain
+		// distinguish past vs future, negative delta => past relative to corrected time domain
 		float flAbsDelta = fabsf(flDelta);
 
 		bool bFuture = flDelta < 0.f; // negative because we subtract record time from server tick domain
 		if (bFuture) flAbsDelta = -flDelta; // |delta|
 
-		// Allow predicted (future) records only if flagged and within tolerance
+		// allow predicted (future) records only if flagged and within tolerance
 		if (pRecord->m_bPredicted && bAllowFuture)
 		{
 			if (flAbsDelta <= flFutureMax)
 				vReturn.push_back(pRecord);
-			continue; // don't evaluate further window constraints
+			continue; // dont evaluate further window constraints
 		}
 
 		// Regular historical record window filter

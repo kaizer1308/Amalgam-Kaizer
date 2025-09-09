@@ -724,6 +724,11 @@ namespace Vars
 			CVar(AutoF2Ignored, "Auto F2 ignored", false);
 			CVar(AutoF1Priority, "Auto F1 priority", false);
 			CVar(AcceptItemDrops, "Auto accept item drops", false);
+			CVar(DisguiseAfterBackstab, "Disguise after backstab", false);
+			CVar(AutoDisguiseIfUndisguised, "Auto disguise", false);
+			CVarEnum(DisguiseClass, "Disguise class", 0, NONE, nullptr,
+				VA_LIST("Scout", "Soldier", "Pyro", "Demoman", "Heavy", "Engineer", "Medic", "Sniper", "Spy"),
+				Scout, Soldier, Pyro, Demoman, Heavy, Engineer, Medic, Sniper, Spy);
 		SUBNAMESPACE_END(Automation);
 
 		SUBNAMESPACE_BEGIN(Exploits)
