@@ -402,15 +402,14 @@ void CMisc::DisguiseAsConfiguredClass(CTFPlayer* pLocal)
 	int cfg = std::clamp(Vars::Misc::Automation::DisguiseClass.Value, 0, 8); // 0..8
 	int tfClass = kUiToTfClass[cfg];
 
-	// prefer enemy team
-	int team = pLocal->m_iTeamNum() == TF_TEAM_RED ? TF_TEAM_BLUE : TF_TEAM_RED;
-
-	// issue disguise command: disguise <class> <team>
-	// order is class first, then team
+	// Use TF2 "enemy team" shorthand for disguise team argument.
+	// The console command expects: disguise <class> <team>
+	// where team = -1 means "enemy team". Using TF_TEAM_* values can map incorrectly
+	// for the console command and cause disguising as our own team.
 	std::string sCmd = "disguise ";
 	sCmd += std::to_string(tfClass);
 	sCmd += " ";
-	sCmd += std::to_string(team);
+	sCmd += "-1"; // enemy team
 	I::EngineClient->ClientCmd_Unrestricted(sCmd.c_str());
 }
 
@@ -523,7 +522,7 @@ void CMisc::Event(IGameEvent* pEvent, uint32_t uHash)
 			bBackstab = true; // assume knife kill implies backstab for our purposes
 
 		if (bBackstab)
-			DisguiseAsConfiguredClass(pLocal);
+			DisguiseAsConfiguredClass(pLocal); // uses enemy team (-1) internally
 		break;
 	}
 	}
