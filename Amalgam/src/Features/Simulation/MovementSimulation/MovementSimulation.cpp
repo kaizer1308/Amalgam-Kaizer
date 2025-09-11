@@ -4,8 +4,139 @@
 #include "../../EnginePrediction/EnginePrediction.h"
 #include <numeric>
 #include <sstream>
+#include <cmath>
+#include <vector>
 
 static CUserCmd s_tDummyCmd = {};
+
+void CMovementSimulation::ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const
+{
+	outResidualRMS = 0.f; outConfidence = 0.f;
+	if (recs.size() < 3 || usedTicks <= 0) return;
+	const float yaw0 = Math::VectorAngles(recs[1].m_vDirection).y;
+	int tickAccum = 0; int pairs = 0; float sumSq = 0.f;
+	for (size_t i = 1; i < recs.size(); ++i)
+	{
+		if (recs[i-1].m_iMode != recs[i].m_iMode) continue;
+		const int dt = std::max(TIME_TO_TICKS(recs[i-1].m_flSimTime - recs[i].m_flSimTime), 1);
+		tickAccum += dt; if (tickAccum > usedTicks) break;
+		const float yawObs = Math::VectorAngles(recs[i].m_vDirection).y;
+	float yawPred = Math::NormalizeAngle(yaw0 + estYawPerTick * tickAccum);
+	float diff = Math::NormalizeAngle(yawObs - yawPred);
+		sumSq += diff * diff; pairs++;
+	}
+	if (pairs > 0)
+	{
+		outResidualRMS = sqrtf(sumSq / pairs);
+		outConfidence = std::clamp(1.f - (outResidualRMS / 15.f), 0.f, 1.f);
+	}
+}
+
+int CMovementSimulation::ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const
+{
+	if ((int)recs.size() < window + 1) return 0;
+	window = std::min(window, (int)recs.size() - 1);
+	float lastYawDelta = 0.f; float jerkSum = 0.f;
+	std::vector<float> speeds; speeds.reserve(window);
+	for (int i = 1; i <= window; ++i)
+	{
+		const float yaw1 = Math::VectorAngles(recs[i-1].m_vDirection).y;
+		const float yaw2 = Math::VectorAngles(recs[i].m_vDirection).y;
+		float dyaw = Math::NormalizeAngle(yaw1 - yaw2);
+		float jerk = fabsf(dyaw - lastYawDelta);
+		jerkSum += jerk; lastYawDelta = dyaw;
+		speeds.push_back(recs[i-1].m_vVelocity.Length2D());
+	}
+
+	float mean = std::accumulate(speeds.begin(), speeds.end(), 0.f) / speeds.size();
+	float var = 0.f; for (float s : speeds) { float d = s - mean; var += d * d; }
+	var /= std::max<size_t>(1, speeds.size());
+	int score = (int)std::round(jerkSum * 0.25f + var * 0.002f);
+	return std::max(0, score);
+}
+
+float CMovementSimulation::PredictAirYawPerTick(const PlayerStorage& tStorage, float avgYaw) const
+{
+	const auto& md = tStorage.m_MoveData;
+	// read convars
+	static auto sv_airaccelerate = U::ConVars.FindVar("sv_airaccelerate");
+	const float airaccel = std::max(sv_airaccelerate ? sv_airaccelerate->GetFloat() : 10.f, 1.f);
+	const float dt = TICK_INTERVAL;
+	const float maxspeed = std::max(md.m_flMaxSpeed, 1.f);
+
+	// wishdir: orthogonal steer relative to avgYaw sign
+	float viewYaw = md.m_vecViewAngles.y;
+	float steerYaw = viewYaw + (avgYaw >= 0.f ? 90.f : -90.f);
+	Vec3 wishdir{}; Math::AngleVectors({0.f, steerYaw, 0.f}, &wishdir);
+	wishdir.z = 0.f; wishdir = wishdir.Normalized();
+
+	Vec3 vel = md.m_vecVelocity; vel.z = 0.f; float speed = vel.Length();
+	if (speed < 1.f) return 0.f;
+
+	float proj = vel.Dot(wishdir);
+	float add = airaccel * maxspeed * dt;
+	if (proj + add > maxspeed)
+		add = std::max(0.f, maxspeed - proj);
+	Vec3 newVel = vel + wishdir * add;
+	float yawOld = Math::VectorAngles(vel).y;
+	float yawNew = Math::VectorAngles(newVel).y;
+	float yawDelta = Math::NormalizeAngle(yawNew - yawOld);
+	return std::clamp(yawDelta, -6.f, 6.f);
+}
+
+float CMovementSimulation::GetGroundTurnScale(const PlayerStorage& tStorage, float avgYaw) const
+{
+	const float k = Vars::Aimbot::Projectile::GroundTurnScaleK.Value;
+	if (k <= 0.f) return 1.f;
+	float v = tStorage.m_MoveData.m_vecVelocity.Length2D();
+	float scale = 1.f / (1.f + k * v * v);
+	return std::clamp(scale, 0.25f, 1.f);
+}
+
+// kasa fit
+float CMovementSimulation::EstimateCurvatureYawPerTick(const std::deque<MoveData>& recs, int maxSamples, int& outUsedTicks) const
+{
+	outUsedTicks = 0;
+	if ((int)recs.size() < 3) return 0.f;
+	int n = std::min(maxSamples, (int)recs.size());
+	// collect points (x,y)
+	std::vector<Vec3> pts; pts.reserve(n);
+	for (int i = 0; i < n; ++i) pts.push_back(recs[i].m_vOrigin);
+	// translate for numerical stability
+	float mx = 0.f, my = 0.f; for (int i = 0; i < n; ++i) { mx += pts[i].x; my += pts[i].y; }
+	mx /= n; my /= n;
+	float Suu=0, Suv=0, Svv=0, Suuu=0, Suvv=0, Svvv=0, Svuu=0;
+	for (int i = 0; i < n; ++i)
+	{
+		float u = pts[i].x - mx; float v = pts[i].y - my;
+		float uu = u*u, vv = v*v;
+		Suu += uu; Svv += vv; Suv += u*v;
+		Suuu += uu*u; Svvv += vv*v; Suvv += u*vv; Svuu += v*uu;
+	}
+	float det = 2.f * (Suu*Svv - Suv*Suv);
+	if (fabsf(det) < 1e-3f) return 0.f;
+	float uc = (Svv*(Suuu + Suvv) - Suv*(Svvv + Svuu)) / det;
+	float vc = (Suu*(Svvv + Svuu) - Suv*(Suuu + Suvv)) / det;
+	float R = sqrtf(uc*uc + vc*vc + (Suu + Svv) / n);
+	if (R < 1.f || !std::isfinite(R)) return 0.f;
+	Vec3 a = pts[std::min(2, n-1)] - pts[1];
+	Vec3 b = pts[1] - pts[0];
+	float cross = a.x * b.y - a.y * b.x;
+	float signDir = cross >= 0.f ? 1.f : -1.f;
+	float totalTicks = 0.f; float dist = 0.f;
+	for (int i = 1; i < n; ++i)
+	{
+		int dt = std::max(TIME_TO_TICKS(recs[i-1].m_flSimTime - recs[i].m_flSimTime), 1);
+		totalTicks += dt; dist += (pts[i-1] - pts[i]).Length2D();
+	}
+	if (totalTicks <= 0.f) return 0.f;
+	outUsedTicks = (int)totalTicks;
+	float v = dist / (totalTicks * TICK_INTERVAL);
+	constexpr float kPi = 3.14159265358979323846f;
+	float yawPerSec = (v / R) * signDir * 180.f / kPi; // deg/sec
+	float yawPerTick = yawPerSec * TICK_INTERVAL;
+	return std::clamp(yawPerTick, -10.f, 10.f);
+}
 
 void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 {
@@ -24,7 +155,7 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 	if (iSamples < 2) return;
 
 	int modeSkips = 0;
-	YawAccumulator acc; // new deterministic accumulator
+	YawAccumulator acc;
 	bool accConfigured = false;
 	size_t i = 1; for (; i < (size_t)iSamples; ++i)
 	{
@@ -57,12 +188,37 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 		dynamicMin = flDistance < flLowMinDist ? flLowMinSamples : (int)Math::RemapVal(flDistance, flLowMinDist, flHighMinDist, flLowMinSamples + 1, flHighMinSamples);
 	}
 
+	if (Vars::Aimbot::Projectile::UseStabilityMinSamples.Value)
+	{
+		int stability = ComputeStabilityScore(vRecords, std::min(iSamples, 12));
+		dynamicMin = std::min(iSamples, dynamicMin + std::min(stability, 8));
+	}
+
 	float avgYaw = acc.Finalize(dynamicMin, dynamicMin); // we pass same value for minTicks & dynamicMin for simplicity
 	if (!avgYaw) return;
 
-	tStorage.m_flAverageYaw = avgYaw;
+	// if curvature fit is enabled, estimate and pick lower residual
+	float chosenYaw = avgYaw; float conf = 0.f; float residual = 0.f;
+	ComputeYawResidualAndConfidence(vRecords, dynamicMin, avgYaw, residual, conf);
+	float bestResidual = residual; float bestConf = conf;
+	if (Vars::Aimbot::Projectile::UseCurvatureFit.Value)
 	{
-		std::ostringstream oss; oss << "flAverageYaw(det) " << avgYaw << " ticks=" << acc.AccumulatedTicks() << " min=" << dynamicMin << (pPlayer->entindex() == I::EngineClient->GetLocalPlayer() ? " (local)" : "");
+		int usedTicksCurv = 0;
+		float curvYaw = EstimateCurvatureYawPerTick(vRecords, iSamples, usedTicksCurv);
+		if (curvYaw != 0.f && usedTicksCurv > 0)
+		{
+			float r2=0.f, c2=0.f; ComputeYawResidualAndConfidence(vRecords, usedTicksCurv, curvYaw, r2, c2);
+			if (r2 < bestResidual)
+			{
+				chosenYaw = curvYaw; bestResidual = r2; bestConf = c2;
+			}
+		}
+	}
+
+	tStorage.m_flAverageYaw = chosenYaw;
+	tStorage.m_flAverageYawConfidence = bestConf;
+	{
+		std::ostringstream oss; oss << "flAverageYaw(det) " << chosenYaw << " ticks=" << acc.AccumulatedTicks() << " min=" << dynamicMin << (pPlayer->entindex() == I::EngineClient->GetLocalPlayer() ? " (local)" : "");
 		SDK::Output("MovementSimulation", oss.str().c_str(), { 100, 200, 150 }, Vars::Debug::Logging.Value);
 	}
 }
@@ -256,10 +412,13 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 			}
 		}
 
-		if (flCurrentChance < Vars::Aimbot::Projectile::HitChance.Value / 100)
+	float required = Vars::Aimbot::Projectile::HitChance.Value / 100.f;
+	float conf = std::clamp(tStorage.m_flAverageYawConfidence, 0.f, 1.f);
+	required *= (1.f - 0.1f * conf);
+	if (flCurrentChance < required)
 		{
 			{
-				std::ostringstream oss; oss << "Hitchance (" << flCurrentChance * 100 << "% < " << Vars::Aimbot::Projectile::HitChance.Value << "%)";
+		std::ostringstream oss; oss << "Hitchance (" << flCurrentChance * 100 << "% < " << (required * 100.f) << "%)";
 				SDK::Output("MovementSimulation", oss.str().c_str(), { 80, 200, 120 }, Vars::Debug::Logging.Value);
 			}
 
@@ -449,7 +608,6 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 	if (bPath)
 		tStorage.m_vPath.push_back(tStorage.m_MoveData.m_vecAbsOrigin);
 
-	// make sure frametime and prediction vars are right
 	I::Prediction->m_bInPrediction = true;
 	I::Prediction->m_bFirstTimePredicted = false;
 	I::GlobalVars->frametime = I::Prediction->m_bEnginePaused ? 0.f : TICK_INTERVAL;
@@ -461,15 +619,33 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 		float flMult = 1.f;
 		if (!tStorage.m_bDirectMove && !tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE))
 		{
-			flCorrection = 90.f * sign(tStorage.m_flAverageYaw);
+			float blend = Vars::Aimbot::Projectile::AirForwardModelBlend.Value;
+			float legacyCorrection = 90.f * sign(tStorage.m_flAverageYaw);
+			float modelYaw = PredictAirYawPerTick(tStorage, tStorage.m_flAverageYaw);
+			blend = std::clamp(blend, 0.f, 1.f);
+			float blendedYaw = tStorage.m_flAverageYaw * (1.f - blend) + modelYaw * blend;
+
 			if (Vars::Aimbot::Projectile::MovesimFrictionFlags.Value & Vars::Aimbot::Projectile::MovesimFrictionFlagsEnum::RunReduce)
 			{
-				float rawScale = GetFrictionScale(tStorage.m_MoveData.m_vecVelocity.Length2D(), tStorage.m_flAverageYaw, tStorage.m_MoveData.m_vecVelocity.z + GetGravity() * TICK_INTERVAL);
+				float rawScale = GetFrictionScale(tStorage.m_MoveData.m_vecVelocity.Length2D(), blendedYaw, tStorage.m_MoveData.m_vecVelocity.z + GetGravity() * TICK_INTERVAL);
 				m_flLastFrictionScale = ClampFriction(rawScale);
 				flMult = m_flLastFrictionScale;
 			}
+			if (Vars::Aimbot::Projectile::MovesimFrictionFlags.Value & Vars::Aimbot::Projectile::MovesimFrictionFlagsEnum::CalculateIncrease)
+			{
+				float vz = tStorage.m_MoveData.m_vecVelocity.z;
+				float band = std::clamp(1.f - fabsf(vz) / 200.f, 0.f, 1.f);
+				flMult *= ClampFriction(1.f + 0.1f * band);
+			}
+			flCorrection = legacyCorrection;
+			tStorage.m_MoveData.m_vecViewAngles.y += blendedYaw * flMult + flCorrection;
 		}
-		tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw * flMult + flCorrection;
+		else
+		{
+			// scale yaw effect at high speeds
+			float gscale = GetGroundTurnScale(tStorage, tStorage.m_flAverageYaw);
+			tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw * gscale;
+		}
 	}
 	else if (!tStorage.m_bDirectMove)
 		tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;

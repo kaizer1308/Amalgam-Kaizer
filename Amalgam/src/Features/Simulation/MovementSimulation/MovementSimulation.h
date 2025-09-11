@@ -60,6 +60,7 @@ struct PlayerStorage
 	PlayerData m_PlayerData = {};
 
 	float m_flAverageYaw = 0.f;
+	float m_flAverageYawConfidence = 0.f;
 	bool m_bBunnyHop = false;
 
 	float m_flSimTime = 0.f;
@@ -69,6 +70,8 @@ struct PlayerStorage
 
 	bool m_bPredictNetworked = true;
 	Vec3 m_vPredictedOrigin = {};
+
+	float m_flStability = 0.f;
 
 	std::vector<Vec3> m_vPath = {};
 
@@ -94,6 +97,12 @@ private:
 	bool SetupMoveData(PlayerStorage& tStorage);
 	void GetAverageYaw(PlayerStorage& tStorage, int iSamples);
 	bool StrafePrediction(PlayerStorage& tStorage, int iSamples);
+
+	float PredictAirYawPerTick(const PlayerStorage& tStorage, float avgYaw) const;
+	float GetGroundTurnScale(const PlayerStorage& tStorage, float avgYaw) const;
+	void   ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const;
+	int    ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const; // returns a non-negative score
+	float  EstimateCurvatureYawPerTick(const std::deque<MoveData>& recs, int maxSamples, int& outUsedTicks) const;
 
 	void SetBounds(CTFPlayer* pPlayer);
 	void RestoreBounds(CTFPlayer* pPlayer);

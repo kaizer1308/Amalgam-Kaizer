@@ -378,6 +378,11 @@ namespace Vars
 			CVarEnum(MovesimFrictionFlags, "Movesim friction flags", 0b01, NOSAVE | DEBUGVAR | DROPDOWN_MULTI, nullptr,
 				VA_LIST("Run reduce", "Calculate increase"),
 				RunReduce = 1 << 0, CalculateIncrease = 1 << 1);
+
+			CVar(UseCurvatureFit, "Use curvature fit", false);
+			CVar(AirForwardModelBlend, "Air forward model blend", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 1.f, 0.1f);
+			CVar(GroundTurnScaleK, "Ground turn scale K", 0.f, SLIDER_MIN | SLIDER_PRECISION, 0.f, 0.005f, 0.0005f);
+			CVar(UseStabilityMinSamples, "Use stability min samples", false);
 		SUBNAMESPACE_END(Projectile);
 
 		SUBNAMESPACE_BEGIN(Melee)
