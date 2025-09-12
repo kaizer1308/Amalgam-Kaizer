@@ -349,6 +349,10 @@ namespace Vars
 
 			CVar(VelocityAverageCount, "Velocity average count", 5, NOSAVE | DEBUGVAR, 1, 10);
 			CVar(VerticalShift, "Vertical shift", 5.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 10.f, 0.5f);
+			CVar(FeetZBoostPipes, "Feet Z-boost (pipes)", 8.f, SLIDER_MIN | SLIDER_PRECISION, 0.f, 20.f, 0.5f);
+			CVar(FeetZBoostPipesDynamic, "Feet Z-boost dynamic", true);
+			CVar(FeetZBoostPipesDynScale, "Feet Z-boost dyn scale", 2.0f, SLIDER_MIN | SLIDER_PRECISION, 0.f, 10.f, 0.25f, "%gu/1000");
+			CVar(FeetZBoostPipesDynMax, "Feet Z-boost dyn max", 12.0f, SLIDER_MIN | SLIDER_PRECISION, 0.f, 20.f, 0.5f);
 			CVar(DragOverride, "Drag override", 0.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 1.f, 0.01f);
 			CVar(TimeOverride, "Time override", 0.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 2.f, 0.01f);
 			CVar(HuntsmanLerp, "Huntsman lerp", 50.f, NOSAVE | DEBUGVAR | SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 1.f, "%g%%");

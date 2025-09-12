@@ -395,7 +395,35 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 				mPoints[iPriority] = Vec3(0, 0, vMaxs.z - Vars::Aimbot::Projectile::VerticalShift.Value);
 			break;
 		case BOUNDS_BODY: mPoints[iPriority] = Vec3(0, 0, (vMaxs.z - vMins.z) / 2); break;
-		case BOUNDS_FEET: mPoints[iPriority] = Vec3(0, 0, vMins.z + Vars::Aimbot::Projectile::VerticalShift.Value); break;
+		case BOUNDS_FEET:
+		{
+			float flBase = Vars::Aimbot::Projectile::VerticalShift.Value;
+			float flZ = vMins.z + flBase;
+			if (m_tInfo.m_pWeapon)
+			{
+				switch (m_tInfo.m_pWeapon->GetWeaponID())
+				{
+				case TF_WEAPON_GRENADELAUNCHER:
+				case TF_WEAPON_CANNON:
+				{
+					float flStatic = Vars::Aimbot::Projectile::FeetZBoostPipes.Value;
+					float flDyn = 0.f;
+					if (Vars::Aimbot::Projectile::FeetZBoostPipesDynamic.Value)
+					{
+						const Vec3 vLocalPos = F::Ticks.GetShootPos();
+						const float flDist = (tTarget.m_vPos - vLocalPos).Length();
+						const float flScale = Vars::Aimbot::Projectile::FeetZBoostPipesDynScale.Value; // units per 1000u
+						const float flMax = Vars::Aimbot::Projectile::FeetZBoostPipesDynMax.Value;
+						flDyn = std::min((flDist * 0.001f) * flScale, flMax);
+					}
+					flZ = vMins.z + std::max(flBase, flStatic + flDyn);
+					break;
+				}
+				}
+			}
+			mPoints[iPriority] = Vec3(0, 0, flZ);
+			break;
+		}
 		}
 	}
 

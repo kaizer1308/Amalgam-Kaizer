@@ -265,6 +265,16 @@ void CMenu::MenuAimbot(int iTab)
 						FSlider(Vars::Aimbot::Projectile::AutoRelease);
 					}
 					PopTransparent();
+
+					FText("\nFeet targeting");
+					FSlider(Vars::Aimbot::Projectile::FeetZBoostPipes, FSliderEnum::Left);
+					FToggle(Vars::Aimbot::Projectile::FeetZBoostPipesDynamic, FToggleEnum::Right);
+					PushTransparent(!Vars::Aimbot::Projectile::FeetZBoostPipesDynamic.Value);
+					{
+						FSlider(Vars::Aimbot::Projectile::FeetZBoostPipesDynScale, FSliderEnum::Left);
+						FSlider(Vars::Aimbot::Projectile::FeetZBoostPipesDynMax, FSliderEnum::Right);
+					}
+					PopTransparent();
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
