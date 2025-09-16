@@ -411,17 +411,33 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 					if (Vars::Aimbot::Projectile::FeetZBoostPipesDynamic.Value)
 					{
 						const Vec3 vLocalPos = F::Ticks.GetShootPos();
-						const float flDist = (tTarget.m_vPos - vLocalPos).Length();
+						Vec3 vHoriz = vLocalPos - tTarget.m_vPos; vHoriz.z = 0.f;
+						const float flDist = vHoriz.Length();
 						const float flScale = Vars::Aimbot::Projectile::FeetZBoostPipesDynScale.Value; // units per 1000u
 						const float flMax = Vars::Aimbot::Projectile::FeetZBoostPipesDynMax.Value;
 						flDyn = std::min((flDist * 0.001f) * flScale, flMax);
 					}
-					flZ = vMins.z + std::max(flBase, flStatic + flDyn);
+					flZ = vMins.z + std::max(flBase, flStatic + flDyn) + m_tInfo.m_vHull.z;
+					flZ = std::min(flZ, vMins.z + (vMaxs.z - vMins.z) * 0.6f);
+
+					Vec3 vDir = m_tInfo.m_vLocalEye - tTarget.m_vPos; vDir.z = 0.f;
+					float flDist2D = vDir.Length();
+					Vec3 vBias = {};
+					if (flDist2D > 1.f)
+					{
+						vDir /= flDist2D;
+						float flBias = std::clamp(flDist2D * 0.01f, 4.f, 12.f);
+						vBias = vDir * flBias;
+						vBias.x = std::clamp(vBias.x, vMins.x + 2.f, vMaxs.x - 2.f);
+						vBias.y = std::clamp(vBias.y, vMins.y + 2.f, vMaxs.y - 2.f);
+					}
+					mPoints[iPriority] = Vec3(vBias.x, vBias.y, flZ);
 					break;
 				}
 				}
 			}
-			mPoints[iPriority] = Vec3(0, 0, flZ);
+			else
+				mPoints[iPriority] = Vec3(0, 0, flZ);
 			break;
 		}
 		}
@@ -995,6 +1011,19 @@ static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLoc
 	flDragTime = powf(flTime, 2) * flDrag / (flOverride ? flOverride : 1.5f); // rough estimate to prevent m_flTime being too low
 	flVelocity = flVelocity - flVelocity * flTime * flDrag;
 }
+static inline float GetVerticalBoost(CTFWeaponBase* pWeapon)
+{
+	if (!pWeapon) return 0.f;
+	switch (pWeapon->GetWeaponID())
+	{
+	case TF_WEAPON_GRENADELAUNCHER:
+	case TF_WEAPON_PIPEBOMBLAUNCHER:
+	case TF_WEAPON_CANNON:
+		return 200.f; // initial upward velocity applied to pipes/stickies/cannonballs
+	default:
+		return 0.f;
+	}
+}
 void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy)
 {
 	if (out.m_iCalculated != CalculatedEnum::Pending)
@@ -1019,11 +1048,37 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		if (!flGrav)
 			flPitch = -DEG2RAD(vAngleTo.x);
 		else
-		{	// arch
-			float flRoot = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * pow(flVelocity, 2));
+		{	// arch: low vs high arc selection
+			float flV2 = pow(flVelocity, 2);
+			float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
 			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
-			flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
+			float flSqrt = sqrt(flRoot);
+			float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
+			float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
+			float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
+			float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
+			float flDesired = iSimTime > 0 ? (TICKS_TO_TIME(iSimTime) + m_tInfo.m_flOffsetTime - flDragTime) : std::min(flTimeLow, flTimeHigh);
+			flPitch = fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired) ? flPitchHigh : flPitchLow;
+
+			// refine using one Newton step to account for initial vertical boost on pipes
+			float flVzBoost = GetVerticalBoost(m_tInfo.m_pWeapon);
+			if (flVzBoost)
+			{
+				for (int k = 0; k < 2; k++)
+				{
+					float flCos = cos(flPitch), flSin = sin(flPitch);
+					if (fabsf(flCos) < 1e-3f) break;
+					float flT = flDist / (flCos * flVelocity);
+					float flPredZ = (flVelocity * flSin + flVzBoost) * flT - 0.5f * flGrav * flT * flT;
+					float flErr = flPredZ - vDelta.z;
+					if (fabsf(flErr) < 0.5f) break;
+					float flDTdTheta = flT * tanf(flPitch);
+					float flDEdTheta = flVelocity * flCos * flT + (flVelocity * flSin - flGrav * flT + flVzBoost) * flDTdTheta;
+					if (fabsf(flDEdTheta) < 1e-3f) break;
+					flPitch -= flErr / flDEdTheta;
+				}
+			}
 		}
 		out.m_flTime = flDist / (cos(flPitch) * flVelocity) - m_tInfo.m_flOffsetTime + flDragTime;
 		out.m_flPitch = flPitch = -RAD2DEG(flPitch) - m_tInfo.m_vAngFix.x;
@@ -1087,11 +1142,18 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		if (!flGrav)
 			out.m_flPitch = -DEG2RAD(vAngleTo.x);
 		else
-		{	// arch
-			float flRoot = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * pow(flVelocity, 2));
+		{	// arch: low vs high arc selection from projectile origin
+			float flV2 = pow(flVelocity, 2);
+			float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
 			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
-			out.m_flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
+			float flSqrt = sqrt(flRoot);
+			float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
+			float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
+			float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
+			float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
+			float flDesired = iSimTime > 0 ? TICKS_TO_TIME(iSimTime) : std::min(flTimeLow, flTimeHigh);
+			out.m_flPitch = fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired) ? flPitchHigh : flPitchLow;
 		}
 		out.m_flTime = flDist / (cos(out.m_flPitch) * flVelocity) + flDragTime;
 	}
