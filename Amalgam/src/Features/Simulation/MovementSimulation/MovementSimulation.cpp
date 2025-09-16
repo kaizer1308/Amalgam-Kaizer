@@ -98,39 +98,66 @@ float CMovementSimulation::EstimateCurvatureYawPerTick(const std::deque<MoveData
 {
 	outUsedTicks = 0;
 	if ((int)recs.size() < 3) return 0.f;
-	int n = std::min(maxSamples, (int)recs.size());
-	// collect points (x,y)
-	std::vector<Vec3> pts; pts.reserve(n);
-	for (int i = 0; i < n; ++i) pts.push_back(recs[i].m_vOrigin);
-	// translate for numerical stability
-	float mx = 0.f, my = 0.f; for (int i = 0; i < n; ++i) { mx += pts[i].x; my += pts[i].y; }
-	mx /= n; my /= n;
-	float Suu=0, Suv=0, Svv=0, Suuu=0, Suvv=0, Svvv=0, Svuu=0;
-	for (int i = 0; i < n; ++i)
+
+	// collect a contiguous window of points from the same movement mode starting at the newest sample
+	const int targetMode = recs[0].m_iMode;
+	std::vector<Vec3> pts; pts.reserve(std::min(maxSamples, (int)recs.size()));
+	std::vector<int> idx; idx.reserve(pts.capacity());
+	for (int i = 0; i < (int)recs.size() && (int)pts.size() < maxSamples; ++i)
 	{
-		float u = pts[i].x - mx; float v = pts[i].y - my;
-		float uu = u*u, vv = v*v;
-		Suu += uu; Svv += vv; Suv += u*v;
-		Suuu += uu*u; Svvv += vv*v; Suvv += u*vv; Svuu += v*uu;
+		if (recs[i].m_iMode != targetMode) break;
+		pts.push_back(recs[i].m_vOrigin);
+		idx.push_back(i);
 	}
-	float det = 2.f * (Suu*Svv - Suv*Suv);
-	if (fabsf(det) < 1e-3f) return 0.f;
-	float uc = (Svv*(Suuu + Suvv) - Suv*(Svvv + Svuu)) / det;
-	float vc = (Suu*(Svvv + Svuu) - Suv*(Suuu + Suvv)) / det;
-	float R = sqrtf(uc*uc + vc*vc + (Suu + Svv) / n);
-	if (R < 1.f || !std::isfinite(R)) return 0.f;
-	Vec3 a = pts[std::min(2, n-1)] - pts[1];
-	Vec3 b = pts[1] - pts[0];
-	float cross = a.x * b.y - a.y * b.x;
-	float signDir = cross >= 0.f ? 1.f : -1.f;
+	if ((int)pts.size() < 3) return 0.f;
+
+	// compute total ticks and distance across the selected contiguous window
 	float totalTicks = 0.f; float dist = 0.f;
-	for (int i = 1; i < n; ++i)
+	for (size_t k = 1; k < idx.size(); ++k)
 	{
-		int dt = std::max(TIME_TO_TICKS(recs[i-1].m_flSimTime - recs[i].m_flSimTime), 1);
-		totalTicks += dt; dist += (pts[i-1] - pts[i]).Length2D();
+		int iPrev = idx[k - 1];
+		int iCur = idx[k];
+		int dt = std::max(TIME_TO_TICKS(recs[iPrev].m_flSimTime - recs[iCur].m_flSimTime), 1);
+		totalTicks += dt;
+		dist += (pts[k - 1] - pts[k]).Length2D();
 	}
-	if (totalTicks <= 0.f) return 0.f;
+	if (totalTicks <= 0.f || dist <= 0.f) return 0.f;
 	outUsedTicks = (int)totalTicks;
+
+	double mx = 0.0, my = 0.0;
+	for (const auto& p : pts) { mx += p.x; my += p.y; }
+	mx /= (double)pts.size(); my /= (double)pts.size();
+
+	double Suu = 0.0, Suv = 0.0, Svv = 0.0, Suuu = 0.0, Suvv = 0.0, Svvv = 0.0, Svuu = 0.0;
+	for (const auto& p : pts)
+	{
+		double u = (double)p.x - mx; double v = (double)p.y - my;
+		double uu = u * u, vv = v * v;
+		Suu += uu; Svv += vv; Suv += u * v;
+		Suuu += uu * u; Svvv += vv * v; Suvv += u * vv; Svuu += v * uu;
+	}
+
+	double det = 2.0 * (Suu * Svv - Suv * Suv);
+	if (fabs(det) < 1e-6) return 0.f;
+
+	double uc = (Svv * (Suuu + Suvv) - Suv * (Svvv + Svuu)) / det;
+	double vc = (Suu * (Svvv + Svuu) - Suv * (Suuu + Suvv)) / det;
+	double R2 = uc * uc + vc * vc + (Suu + Svv) / (double)pts.size();
+	if (!(R2 > 0.0 && std::isfinite(R2))) return 0.f;
+	float R = sqrtf((float)R2);
+	if (R < 1.f) return 0.f;
+
+	// ggregate cross products over segments (newest -> older order)
+	double crossSum = 0.0;
+	for (size_t k = 0; k + 2 < pts.size(); ++k)
+	{
+		Vec3 b = pts[k + 1] - pts[k];
+		Vec3 a = pts[k + 2] - pts[k + 1];
+		crossSum += (double)(a.x * b.y - a.y * b.x);
+	}
+	float signDir = crossSum >= 0.0 ? 1.f : -1.f;
+
+	// mean speed over the window and corresponding yaw rate
 	float v = dist / (totalTicks * TICK_INTERVAL);
 	constexpr float kPi = 3.14159265358979323846f;
 	float yawPerSec = (v / R) * signDir * 180.f / kPi; // deg/sec
