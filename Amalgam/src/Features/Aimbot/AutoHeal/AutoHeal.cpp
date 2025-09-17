@@ -609,13 +609,11 @@ void CAutoHeal::AutoCbowHealSwitch(CTFPlayer* pLocal, CWeaponMedigun* pWeapon, C
 		return;
 
 	// vacc mode guard
+	bool bVaccGuardBlock = false;
 	if (Vars::Aimbot::Healing::AutoVaccinator.Value && pWeapon->GetMedigunType() == MEDIGUN_RESIST)
 	{
-		// recent danger or swap/charge -> skip
-		if (m_flDamagedTime > 0.f)
-			return;
-		if ((pCmd->buttons & (IN_RELOAD | IN_ATTACK2)) || I::GlobalVars->curtime < m_flSwapTime)
-			return;
+		// only block if actively swapping/charging
+		bVaccGuardBlock = (pCmd->buttons & (IN_RELOAD | IN_ATTACK2)) || I::GlobalVars->curtime < m_flSwapTime;
 	}
 
 	// cooldown + post-shot gap
@@ -707,6 +705,10 @@ void CAutoHeal::AutoCbowHealSwitch(CTFPlayer* pLocal, CWeaponMedigun* pWeapon, C
 	}
 
 	if (!bNeedHeal)
+		return;
+
+	// if vacc wants to swap/charge, allow critical override to pass, else block
+	if (bVaccGuardBlock && !(bCriticalTarget && Vars::Aimbot::Healing::AutoArrowForceOnCritical.Value))
 		return;
 
 	// swap to cbow

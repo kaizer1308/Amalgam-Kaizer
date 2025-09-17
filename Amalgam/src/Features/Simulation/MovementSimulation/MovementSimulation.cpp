@@ -372,8 +372,7 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 
 	// the hacks that make it work
 	{
-		if (auto pAvgVelocity = H::Entities.GetAvgVelocity(pPlayer->entindex()))
-			pPlayer->m_vecVelocity() = *pAvgVelocity; // only use average velocity here
+		// use raw vel
 
 		if (pPlayer->m_bDucked() = pPlayer->IsDucking())
 		{
@@ -668,35 +667,15 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 	float flCorrection = 0.f;
 	if (tStorage.m_flAverageYaw)
 	{
-		float flMult = 1.f;
 		if (!tStorage.m_bDirectMove && !tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE))
 		{
-			float blend = Vars::Aimbot::Projectile::AirForwardModelBlend.Value;
-			float legacyCorrection = 90.f * sign(tStorage.m_flAverageYaw);
-			float modelYaw = PredictAirYawPerTick(tStorage, tStorage.m_flAverageYaw);
-			blend = std::clamp(blend, 0.f, 1.f);
-			float blendedYaw = tStorage.m_flAverageYaw * (1.f - blend) + modelYaw * blend;
-
-			if (Vars::Aimbot::Projectile::MovesimFrictionFlags.Value & Vars::Aimbot::Projectile::MovesimFrictionFlagsEnum::RunReduce)
-			{
-				float rawScale = GetFrictionScale(tStorage.m_MoveData.m_vecVelocity.Length2D(), blendedYaw, tStorage.m_MoveData.m_vecVelocity.z + GetGravity() * TICK_INTERVAL);
-				m_flLastFrictionScale = ClampFriction(rawScale);
-				flMult = m_flLastFrictionScale;
-			}
-			if (Vars::Aimbot::Projectile::MovesimFrictionFlags.Value & Vars::Aimbot::Projectile::MovesimFrictionFlagsEnum::CalculateIncrease)
-			{
-				float vz = tStorage.m_MoveData.m_vecVelocity.z;
-				float band = std::clamp(1.f - fabsf(vz) / 200.f, 0.f, 1.f);
-				flMult *= ClampFriction(1.f + 0.1f * band);
-			}
-			flCorrection = legacyCorrection;
-			tStorage.m_MoveData.m_vecViewAngles.y += blendedYaw * flMult + flCorrection;
+			// apply raw measured yaw per tick for air strafing
+			tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw;
 		}
 		else
 		{
-			// scale yaw effect at high speeds
-			float gscale = GetGroundTurnScale(tStorage, tStorage.m_flAverageYaw);
-			tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw * gscale;
+			// apply raw measured yaw per tick for ground strafing
+			tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw;
 		}
 	}
 	else if (!tStorage.m_bDirectMove)
@@ -772,18 +751,9 @@ void CMovementSimulation::Restore(PlayerStorage& tStorage)
 float CMovementSimulation::GetPredictedDelta(CBaseEntity* pEntity)
 {
 	auto& vSimTimes = m_mSimTimes[pEntity->entindex()];
-	float raw = TICK_INTERVAL;
-	if (!vSimTimes.empty())
-	{
-		// 0 = average, 1 = max (legacy modes) treat both as raw before smoothing
-		switch (Vars::Aimbot::Projectile::DeltaMode.Value)
-		{
-		case 0: raw = std::reduce(vSimTimes.begin(), vSimTimes.end()) / vSimTimes.size(); break;
-		case 1: raw = *std::max_element(vSimTimes.begin(), vSimTimes.end()); break;
-		default: raw = vSimTimes.front(); break;
-		}
-	}
-	return SmoothDelta(raw);
+	// use latest observed network delta
+	float raw = vSimTimes.empty() ? TICK_INTERVAL : vSimTimes.front();
+	return std::clamp(raw, TICK_INTERVAL, 0.25f);
 }
 
 float CMovementSimulation::SmoothDelta(float newDelta)

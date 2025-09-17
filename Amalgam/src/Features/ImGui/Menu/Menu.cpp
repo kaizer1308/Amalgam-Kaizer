@@ -256,8 +256,8 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Projectile::Modifiers, FDropdownEnum::Right);
 					FSlider(Vars::Aimbot::Projectile::MaxSimulationTime, FSliderEnum::Left);
 					FToggle(Vars::Aimbot::Projectile::UseCurvatureFit, FToggleEnum::Right);
-					FSlider(Vars::Aimbot::Projectile::AirForwardModelBlend, FSliderEnum::Left);
-					FSlider(Vars::Aimbot::Projectile::GroundTurnScaleK, FSliderEnum::Right);
+					// FSlider(Vars::Aimbot::Projectile::AirForwardModelBlend, FSliderEnum::Left); // hidden 
+					// FSlider(Vars::Aimbot::Projectile::GroundTurnScaleK, FSliderEnum::Right); // hidden 
 					FToggle(Vars::Aimbot::Projectile::UseStabilityMinSamples, FToggleEnum::Left);
 					PushTransparent(!Vars::Aimbot::Projectile::StrafePrediction.Value);
 					{
@@ -332,7 +332,7 @@ void CMenu::MenuAimbot(int iTab)
 						FDropdown(Vars::Aimbot::Projectile::RocketSplashMode, FDropdownEnum::Right, 0, &Hovered); FTooltip("Special splash type for rockets, more expensive", Hovered);
 						FSlider(Vars::Aimbot::Projectile::DeltaCount, FSliderEnum::Left);
 						FDropdown(Vars::Aimbot::Projectile::DeltaMode, FDropdownEnum::Right);
-						FDropdown(Vars::Aimbot::Projectile::MovesimFrictionFlags);
+						// FDropdown(Vars::Aimbot::Projectile::MovesimFrictionFlags); // hidden for accuracy mode
 					} EndSection();
 				}
 				if (Section("Melee", 8))
