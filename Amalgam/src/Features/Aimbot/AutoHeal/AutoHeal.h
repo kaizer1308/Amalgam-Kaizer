@@ -24,7 +24,7 @@ private:
 	float m_flDamagedTime = 0.f;
 
 	// Auto arrow control
-	float m_flNextArrowSwitch = 0.f;
+	float m_flNextArrowSwitch = 0.f; // tiny anti-flap
 	float m_flLastArrowShot = 0.f;
 
 #ifdef DEBUG_VACCINATOR

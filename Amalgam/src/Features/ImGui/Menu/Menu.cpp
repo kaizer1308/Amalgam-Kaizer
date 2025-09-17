@@ -201,12 +201,15 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Healing::HealPriority);
 					FToggle(Vars::Aimbot::Healing::AutoHeal, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Healing::AutoArrow, FToggleEnum::Right);
-					FSlider(Vars::Aimbot::Healing::AutoArrowHealthThreshold);
-					FSlider(Vars::Aimbot::Healing::AutoArrowCooldown);
-					FSlider(Vars::Aimbot::Healing::AutoArrowCriticalThreshold);
-					FToggle(Vars::Aimbot::Healing::AutoArrowForceOnCritical, FToggleEnum::Left);
-					FToggle(Vars::Aimbot::Healing::AutoArrowAnticipateDamage, FToggleEnum::Right);
-					FSlider(Vars::Aimbot::Healing::AutoArrowDangerThreshold);
+					if (Vars::Debug::Options.Value)
+					{
+						FSlider(Vars::Aimbot::Healing::AutoArrowHealthThreshold);
+						FSlider(Vars::Aimbot::Healing::AutoArrowCooldown);
+						FSlider(Vars::Aimbot::Healing::AutoArrowCriticalThreshold);
+						FToggle(Vars::Aimbot::Healing::AutoArrowForceOnCritical, FToggleEnum::Left);
+						FToggle(Vars::Aimbot::Healing::AutoArrowAnticipateDamage, FToggleEnum::Right);
+						FSlider(Vars::Aimbot::Healing::AutoArrowDangerThreshold);
+					}
 					FToggle(Vars::Aimbot::Healing::AutoRepair, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Healing::AutoSandvich, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Healing::AutoVaccinator, FToggleEnum::Left);
@@ -332,7 +335,7 @@ void CMenu::MenuAimbot(int iTab)
 						FDropdown(Vars::Aimbot::Projectile::RocketSplashMode, FDropdownEnum::Right, 0, &Hovered); FTooltip("Special splash type for rockets, more expensive", Hovered);
 						FSlider(Vars::Aimbot::Projectile::DeltaCount, FSliderEnum::Left);
 						FDropdown(Vars::Aimbot::Projectile::DeltaMode, FDropdownEnum::Right);
-						// FDropdown(Vars::Aimbot::Projectile::MovesimFrictionFlags); // hidden for accuracy mode
+						// FDropdown(Vars::Aimbot::Projectile::MovesimFrictionFlags); // hidden
 					} EndSection();
 				}
 				if (Section("Melee", 8))

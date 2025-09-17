@@ -1834,7 +1834,23 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 
 	auto vTargets = SortTargets(pLocal, pWeapon);
 	if (vTargets.empty())
+	{
+		// If we swapped to bow but have no valid heal target (HP/FOV/LOS), swap back to medigun
+		if (nWeaponID == TF_WEAPON_CROSSBOW && Vars::Aimbot::Healing::AutoArrow.Value && !m_iLastTickCancel)
+		{
+			for (int i = 0; i < MAX_WEAPONS; i++)
+			{
+				auto pSwap = pLocal->GetWeaponFromSlot(i);
+				if (!pSwap || pSwap == pWeapon || !pSwap->CanBeSelected())
+					continue;
+				if (pSwap->GetWeaponID() != TF_WEAPON_MEDIGUN)
+					continue;
+				m_iLastTickCancel = pSwap->entindex();
+				break;
+			}
+		}
 		return false;
+	}
 
 	if (Vars::Aimbot::Projectile::Modifiers.Value & Vars::Aimbot::Projectile::ModifiersEnum::ChargeWeapon && iRealAimType
 		&& (nWeaponID == TF_WEAPON_COMPOUND_BOW || nWeaponID == TF_WEAPON_PIPEBOMBLAUNCHER))
@@ -1877,7 +1893,24 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 				pCmd->buttons |= IN_ATTACK;
 			}
 		}
-		if (!iResult) continue;
+		if (!iResult)
+		{
+			// same fallback: no valid shot this tick, switch back to medigun if on crossbow
+			if (nWeaponID == TF_WEAPON_CROSSBOW && Vars::Aimbot::Healing::AutoArrow.Value && !m_iLastTickCancel)
+			{
+				for (int i = 0; i < MAX_WEAPONS; i++)
+				{
+					auto pSwap = pLocal->GetWeaponFromSlot(i);
+					if (!pSwap || pSwap == pWeapon || !pSwap->CanBeSelected())
+						continue;
+					if (pSwap->GetWeaponID() != TF_WEAPON_MEDIGUN)
+						continue;
+					m_iLastTickCancel = pSwap->entindex();
+					break;
+				}
+			}
+			continue;
+		}
 		if (iResult == 2)
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
@@ -1947,7 +1980,7 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 					if (pSwap->GetWeaponID() != TF_WEAPON_MEDIGUN)
 						continue;
 					m_iLastTickCancel = pSwap->entindex();
-					// mark last arrow shot time (used by AutoHeal to throttle)
+					// mark last arrow shot (for tiny anti-flap)
 					F::AutoHeal.NoteArrowShot(I::GlobalVars->curtime);
 					break;
 				}

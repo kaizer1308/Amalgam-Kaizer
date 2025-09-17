@@ -603,50 +603,45 @@ void CAutoHeal::AutoCbowHealSwitch(CTFPlayer* pLocal, CWeaponMedigun* pWeapon, C
 	if (!pLocal->CanAttack() || pWeapon->GetWeaponID() != TF_WEAPON_MEDIGUN)
 		return;
 
-	// respect inputs/heal state
-	if ((pCmd->buttons & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD))
-		|| pWeapon->m_bHealing() || pWeapon->m_bAttacking() || pWeapon->m_bChargeRelease())
+	// respect inputs: allow healing beam; only block swap/uber
+	if ((pCmd->buttons & (IN_ATTACK2 | IN_RELOAD))
+		|| pWeapon->m_bChargeRelease())
 		return;
 
 	// vacc mode guard
 	bool bVaccGuardBlock = false;
 	if (Vars::Aimbot::Healing::AutoVaccinator.Value && pWeapon->GetMedigunType() == MEDIGUN_RESIST)
 	{
-		// only block if actively swapping/charging
+		// only block if actively swapping/ubering; allow normal healing
 		bVaccGuardBlock = (pCmd->buttons & (IN_RELOAD | IN_ATTACK2)) || I::GlobalVars->curtime < m_flSwapTime;
 	}
 
-	// cooldown + post-shot gap
+	// anti-flap and adaptive cooldown
 	if (I::GlobalVars->curtime < m_flNextArrowSwitch)
 		return;
 	if (m_flLastArrowShot > 0.f)
 	{
-		// smart gap: hp/dist/vax
-		// base slider, clamp 50–150%
-		float flBase = Vars::Aimbot::Healing::AutoArrowCooldown.Value;
-		float flAdapt = flBase;
-		// pick worst hp + dist
-		float flBestDeficit = 0.f; // 0..1 (1 = low HP)
-		float flBestDist = 0.f;
-		for (auto pEntity : H::Entities.GetGroup(EGroupType::PLAYERS_TEAMMATES))
+		// base from slider
+		float flBase = std::max(0.f, Vars::Aimbot::Healing::AutoArrowCooldown.Value);
+		// factors: teammate HP deficit, distance, danger, vacc state
+		float flDeficit = 0.f, flDist = 0.f, flDangerMax = 0.f;
+		if (auto pHealTarget = pWeapon->m_hHealingTarget()->As<CTFPlayer>())
 		{
-			auto pTeammate = pEntity->As<CTFPlayer>();
-			if (!pTeammate || !pTeammate->IsAlive()) continue;
-			int iMaxHP = std::max(1, pTeammate->GetMaxHealth());
-			float flHPFrac = (float)pTeammate->m_iHealth() / (float)iMaxHP; // 0..1
-			float flDeficit = 1.f - flHPFrac; // 0..1
-			if (flDeficit < 0.001f) continue;
-			float flDist = pLocal->GetShootPos().DistTo(pTeammate->m_vecOrigin());
-			if (flDeficit > flBestDeficit)
-				flBestDeficit = flDeficit, flBestDist = flDist;
+			int iMaxHP = std::max(1, pHealTarget->GetMaxHealth());
+			flDeficit = 1.f - ((float)pHealTarget->m_iHealth() / (float)iMaxHP); // 0..1
+			flDist = pLocal->GetShootPos().DistTo(pHealTarget->m_vecOrigin());
+			float b, l, f; b = l = f = 0.f; GetDangers(pHealTarget, pWeapon->GetMedigunType() == MEDIGUN_RESIST, b, l, f);
+			flDangerMax = std::max({ b, l, f });
 		}
-		// hp -> shorter
-		float fDefMod = Math::Lerp(1.25f, 0.6f, std::clamp(flBestDeficit, 0.f, 1.f));
-		// far -> longer
-		float fDistMod = Math::Lerp(0.8f, 1.3f, std::clamp(flBestDist / 1500.f, 0.f, 1.f));
-		// vax -> longer
-		float fVaxMod = m_flDamagedTime > 0.f ? 1.25f : 1.f;
-		flAdapt = std::clamp(flBase * fDefMod * fDistMod * fVaxMod, flBase * 0.5f, flBase * 1.5f);
+		// map deficit (0..1) to cooldown scale (1.2..0.6) => lower HP = shorter wait
+		float fDefMod = Math::Lerp(1.2f, 0.6f, std::clamp(flDeficit, 0.f, 1.f));
+		// map distance (0..1500) to (0.8..1.25) => farther = longer wait to let bolt land
+		float fDistMod = Math::Lerp(0.8f, 1.25f, std::clamp(flDist / 1500.f, 0.f, 1.f));
+		// map danger (0..1+) to (1.0..0.7) => higher danger = shorter wait
+		float fDngrMod = Math::Lerp(1.f, 0.7f, std::clamp(flDangerMax, 0.f, 1.f));
+		// vacc swap window slightly lengthens
+		float fVaxMod = ((pCmd->buttons & (IN_RELOAD | IN_ATTACK2)) || I::GlobalVars->curtime < m_flSwapTime) ? 1.15f : 1.f;
+		float flAdapt = std::clamp(flBase * fDefMod * fDistMod * fDngrMod * fVaxMod, flBase * 0.5f, flBase * 1.5f);
 		if (I::GlobalVars->curtime - m_flLastArrowShot < flAdapt)
 			return;
 	}
@@ -658,10 +653,43 @@ void CAutoHeal::AutoCbowHealSwitch(CTFPlayer* pLocal, CWeaponMedigun* pWeapon, C
 	bool bNeedHeal = false;
 	bool bCriticalTarget = false;
 	float flHPThreshold = Vars::Aimbot::Healing::AutoArrowHealthThreshold.Value;
+
+	// prefer current heal target first
+	if (auto pHealTarget = pWeapon->m_hHealingTarget()->As<CTFPlayer>())
+	{
+		if (Vars::Aimbot::Healing::HealPriority.Value <= Vars::Aimbot::Healing::HealPriorityEnum::FriendsOnly
+			|| H::Entities.IsFriend(pHealTarget->entindex()) || H::Entities.InParty(pHealTarget->entindex()))
+		{
+			int iMaxHP = std::max(1, pHealTarget->GetMaxHealth());
+			float flHP = 100.f * (float)pHealTarget->m_iHealth() / (float)iMaxHP;
+			float flCrit = Vars::Aimbot::Healing::AutoArrowCriticalThreshold.Value;
+			float flFOVTo; Vec3 vPos, vAngleTo;
+			if (F::AimbotGlobal.PlayerBoneInFOV(pHealTarget, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo)
+				&& flFOVTo <= Vars::Aimbot::General::AimFOV.Value
+				&& SDK::VisPosWorld(pLocal, pHealTarget, vLocalPos, vPos))
+			{
+				if (flHP <= flHPThreshold)
+					bNeedHeal = true;
+				if (flHP <= flCrit)
+					bCriticalTarget = true;
+				if (Vars::Aimbot::Healing::AutoArrowAnticipateDamage.Value)
+				{
+					float flBullet, flBlast, flFire; flBullet = flBlast = flFire = 0.f;
+					GetDangers(pHealTarget, pWeapon->GetMedigunType() == MEDIGUN_RESIST, flBullet, flBlast, flFire);
+					float flDanger = std::max({ flBullet, flBlast, flFire });
+					if (flDanger >= Vars::Aimbot::Healing::AutoArrowDangerThreshold.Value)
+						bCriticalTarget = bNeedHeal = true;
+				}
+			}
+		}
+	}
 	for (auto pEntity : H::Entities.GetGroup(EGroupType::PLAYERS_TEAMMATES))
 	{
 		auto pTeammate = pEntity->As<CTFPlayer>();
 		if (!pTeammate || pTeammate == pLocal || !pTeammate->IsAlive())
+			continue;
+		// already handled heal target above
+		if (pWeapon->m_hHealingTarget().Get() == pTeammate)
 			continue;
 
 		// hp/priority gate
