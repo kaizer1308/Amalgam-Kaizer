@@ -215,9 +215,11 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 		dynamicMin = flDistance < flLowMinDist ? flLowMinSamples : (int)Math::RemapVal(flDistance, flLowMinDist, flHighMinDist, flLowMinSamples + 1, flHighMinSamples);
 	}
 
+	int stabilityScore = ComputeStabilityScore(vRecords, std::min(iSamples, 12));
+	tStorage.m_flStability = (float)stabilityScore;
 	if (Vars::Aimbot::Projectile::UseStabilityMinSamples.Value)
 	{
-		int stability = ComputeStabilityScore(vRecords, std::min(iSamples, 12));
+		int stability = stabilityScore;
 		dynamicMin = std::min(iSamples, dynamicMin + std::min(stability, 8));
 	}
 
@@ -443,18 +445,26 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 		float required = 0.f;
 		if (Vars::Aimbot::Projectile::HitChance.Value > 0.f)
 		{
-			required = Vars::Aimbot::Projectile::HitChance.Value / 100.f;
+			float base = Vars::Aimbot::Projectile::HitChance.Value / 100.f;
+			float maxSpeed = std::max(tStorage.m_MoveData.m_flMaxSpeed, 1.f);
+			float speedFrac = std::clamp(tStorage.m_MoveData.m_vecVelocity.Length2D() / maxSpeed, 0.f, 1.f);
+			float instability = std::clamp(tStorage.m_flStability / 8.f, 0.f, 1.f);
+			float coverage = iStrafeSamples > 0 ? std::clamp((float(std::max<size_t>(iSamples, size_t(1)) - 1) / float(iStrafeSamples)), 0.f, 1.f) : 1.f;
+			float adjust = 1.f;
+			adjust *= (1.f + 0.25f * speedFrac);
+			adjust *= (1.f + 0.25f * instability);
+			adjust *= (1.f - 0.20f * conf);
+			adjust *= (1.f + 0.15f * (1.f - coverage));
+			adjust = std::clamp(adjust, 0.75f, 1.35f);
+			required = std::clamp(base * adjust, 0.05f, 0.99f);
 		}
 		else
 		{
-			// Auto hitchance: derive a threshold from current movement predictability
-			// Higher speed and lower confidence -> require higher chance; clamp to sane bounds
 			float maxSpeed = std::max(tStorage.m_MoveData.m_flMaxSpeed, 1.f);
 			float speedFrac = std::clamp(tStorage.m_MoveData.m_vecVelocity.Length2D() / maxSpeed, 0.f, 1.f);
 			required = 0.5f + 0.25f * speedFrac + 0.25f * (1.f - conf); // 50%..100% before final adjustment
 			required = std::clamp(required, 0.35f, 0.95f);
 		}
-		// Slightly ease requirement with higher confidence
 		required *= (1.f - 0.1f * conf);
 		required = std::clamp(required, 0.1f, 0.95f);
 	if (flCurrentChance < required)
