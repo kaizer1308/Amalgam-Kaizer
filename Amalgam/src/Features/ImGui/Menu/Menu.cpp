@@ -261,7 +261,7 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::Aimbot::Projectile::UseStabilityMinSamples, FToggleEnum::Left);
 					PushTransparent(!Vars::Aimbot::Projectile::StrafePrediction.Value);
 					{
-						FSlider(Vars::Aimbot::Projectile::HitChance, FSliderEnum::Right);
+					FSlider(Vars::Aimbot::Projectile::HitChance, FSliderEnum::Right, Vars::Aimbot::Projectile::HitChance.Value <= 0.f ? "Auto" : "%g%%");
 					}
 					PopTransparent();
 					FSlider(Vars::Aimbot::Projectile::AutodetRadius, FSliderEnum::Left);

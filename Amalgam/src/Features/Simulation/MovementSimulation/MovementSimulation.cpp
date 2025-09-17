@@ -409,7 +409,7 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 	bool bCalculated = bStrafe ? StrafePrediction(tStorage, iStrafeSamples) : false;
 
 	// really hope this doesn't work like shit
-	if (bHitchance && bCalculated && !pPlayer->m_vecVelocity().IsZero() && Vars::Aimbot::Projectile::HitChance.Value)
+	if (bHitchance && bCalculated && !pPlayer->m_vecVelocity().IsZero())
 	{
 		const auto& vRecords = m_mRecords[pPlayer->entindex()];
 		const auto iSamples = vRecords.size();
@@ -439,9 +439,24 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 			}
 		}
 
-	float required = Vars::Aimbot::Projectile::HitChance.Value / 100.f;
-	float conf = std::clamp(tStorage.m_flAverageYawConfidence, 0.f, 1.f);
-	required *= (1.f - 0.1f * conf);
+		float conf = std::clamp(tStorage.m_flAverageYawConfidence, 0.f, 1.f);
+		float required = 0.f;
+		if (Vars::Aimbot::Projectile::HitChance.Value > 0.f)
+		{
+			required = Vars::Aimbot::Projectile::HitChance.Value / 100.f;
+		}
+		else
+		{
+			// Auto hitchance: derive a threshold from current movement predictability
+			// Higher speed and lower confidence -> require higher chance; clamp to sane bounds
+			float maxSpeed = std::max(tStorage.m_MoveData.m_flMaxSpeed, 1.f);
+			float speedFrac = std::clamp(tStorage.m_MoveData.m_vecVelocity.Length2D() / maxSpeed, 0.f, 1.f);
+			required = 0.5f + 0.25f * speedFrac + 0.25f * (1.f - conf); // 50%..100% before final adjustment
+			required = std::clamp(required, 0.35f, 0.95f);
+		}
+		// Slightly ease requirement with higher confidence
+		required *= (1.f - 0.1f * conf);
+		required = std::clamp(required, 0.1f, 0.95f);
 	if (flCurrentChance < required)
 		{
 			{
