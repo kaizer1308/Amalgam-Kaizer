@@ -407,6 +407,12 @@ namespace Vars
 				None, PrioritizeTeam, PrioritizeFriends, FriendsOnly);
 			CVar(AutoHeal, "Auto heal", false);
 			CVar(AutoArrow, "Auto arrow", false);
+			CVar(AutoArrowHealthThreshold, "Auto arrow health threshold", 80.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 5.f, "%g%%");
+			CVar(AutoArrowCooldown, "Auto arrow cooldown", 2.5f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 10.f, 0.5f, "%gs");
+			CVar(AutoArrowCriticalThreshold, "Auto arrow critical threshold", 35.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 5.f, "%g%%");
+			CVar(AutoArrowForceOnCritical, "Auto arrow force on critical", true);
+			CVar(AutoArrowAnticipateDamage, "Auto arrow anticipate damage", true);
+			CVar(AutoArrowDangerThreshold, "Auto arrow danger threshold", 0.3f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 1.5f, 0.05f);
 			CVar(AutoRepair, "Auto repair", false);
 			CVar(AutoSandvich, "Auto sandvich", false);
 			CVar(AutoVaccinator, "Auto vaccinator", false);

@@ -6,6 +6,7 @@
 #include "../../Ticks/Ticks.h"
 #include "../../Visuals/Visuals.h"
 #include "../AutoAirblast/AutoAirblast.h"
+#include "../AutoHeal/AutoHeal.h"
 
 //#define SPLASH_DEBUG1 // normal splash visualization
 //#define SPLASH_DEBUG2 // obstructed splash visualization
@@ -34,7 +35,7 @@ std::vector<Target_t> CAimbotProjectile::GetTargets(CTFPlayer* pLocal, CTFWeapon
 		{
 		case TF_WEAPON_CROSSBOW:
 			if (Vars::Aimbot::Healing::AutoArrow.Value)
-				eGroupType = eGroupType != EGroupType::GROUP_INVALID ? EGroupType::PLAYERS_ALL : EGroupType::PLAYERS_TEAMMATES;
+				eGroupType = EGroupType::PLAYERS_TEAMMATES;
 			break;
 		case TF_WEAPON_LUNCHBOX:
 			if (Vars::Aimbot::Healing::AutoSandvich.Value)
@@ -1931,6 +1932,27 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		}
 
 		F::Aimbot.m_bRan = G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
+
+		// If we fired a heal bolt with crossbow, queue switch-back to medigun next tick
+		if (nWeaponID == TF_WEAPON_CROSSBOW && Vars::Aimbot::Healing::AutoArrow.Value)
+		{
+			bool bTeammate = tTarget.m_pEntity->m_iTeamNum() == pLocal->m_iTeamNum();
+			if (bTeammate && G::Attacking == 1 && !m_iLastTickCancel)
+			{
+				for (int i = 0; i < MAX_WEAPONS; i++)
+				{
+					auto pSwap = pLocal->GetWeaponFromSlot(i);
+					if (!pSwap || pSwap == pWeapon || !pSwap->CanBeSelected())
+						continue;
+					if (pSwap->GetWeaponID() != TF_WEAPON_MEDIGUN)
+						continue;
+					m_iLastTickCancel = pSwap->entindex();
+					// mark last arrow shot time (used by AutoHeal to throttle)
+					F::AutoHeal.NoteArrowShot(I::GlobalVars->curtime);
+					break;
+				}
+			}
+		}
 		DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 
 		Aim(pCmd, tTarget.m_vAngleTo);

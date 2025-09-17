@@ -201,6 +201,12 @@ void CMenu::MenuAimbot(int iTab)
 					FDropdown(Vars::Aimbot::Healing::HealPriority);
 					FToggle(Vars::Aimbot::Healing::AutoHeal, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Healing::AutoArrow, FToggleEnum::Right);
+					FSlider(Vars::Aimbot::Healing::AutoArrowHealthThreshold);
+					FSlider(Vars::Aimbot::Healing::AutoArrowCooldown);
+					FSlider(Vars::Aimbot::Healing::AutoArrowCriticalThreshold);
+					FToggle(Vars::Aimbot::Healing::AutoArrowForceOnCritical, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Healing::AutoArrowAnticipateDamage, FToggleEnum::Right);
+					FSlider(Vars::Aimbot::Healing::AutoArrowDangerThreshold);
 					FToggle(Vars::Aimbot::Healing::AutoRepair, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Healing::AutoSandvich, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Healing::AutoVaccinator, FToggleEnum::Left);
