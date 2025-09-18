@@ -1,5 +1,3 @@
-<div align="center">
-
 # Amalgam Kaizer
 
 ## Update Changelog
