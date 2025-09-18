@@ -12,7 +12,7 @@
 ### Update History
 
 **September 17, 2024**
-- **Auto Switch for Bow**: Added with customizable settings (previously requested by rijin)
+- **Auto Switch for Bow**: Added with customizable settings (rijin like logic)
 
 **September 16, 2024**
 - **Demo Improvements**:
