@@ -34,6 +34,6 @@
 - **Performance**: FPS drops after extended play time (fix in progress)
 
 ### Completed Tasks
-- ~~Auto switch for autobow (rijin request)~~ **COMPLETED** (Sept 17)
+- ~~Auto switch for autobow **COMPLETED** (Sept 17)
 
 [VAC bypass](https://github.com/danielkrupinski/VAC-Bypass-Loader) and [Xenos](https://github.com/DarthTon/Xenos/releases) recommended. 
