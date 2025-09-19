@@ -37,4 +37,6 @@
 ### Completed Tasks
 - ~~Auto switch for autobow **COMPLETED** (Sept 17)
 
+[![Discord](https://img.shields.io/discord/1227898008373297223?style=for-the-badge&color=blue&labelColor=grey&label=Discord&logo=discord)](https://discord.gg/pev7Yr27pN)
+
 [VAC bypass](https://github.com/danielkrupinski/VAC-Bypass-Loader) and [Xenos](https://github.com/DarthTon/Xenos/releases) recommended. 
