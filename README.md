@@ -29,6 +29,7 @@
 - **Kasa Fit**: Fixed match calcs
 - **MoveSim Data**: Removed smoothing/heuristics, now uses raw data for much more accurate simulation
 - **Loose Cannon**: Fixed gravity calculations
+- **Swing Prediction**: Fixed early swings
 
 **Known Issues**
 - **Performance**: FPS drops after extended play time (fix in progress)
