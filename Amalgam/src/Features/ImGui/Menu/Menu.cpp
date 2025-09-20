@@ -2342,8 +2342,7 @@ void CMenu::MenuSettings(int iTab)
 					{
 						bool bCurrentConfig = FNV1A::Hash32(sConfigName.c_str()) == FNV1A::Hash32(sConfig.c_str());
 						ImVec2 vOriginalPos = GetCursorPos();
-
-						SetCursorPos({ vOriginalPos.x + H::Draw.Scale(2), vOriginalPos.y + H::Draw.Scale(9) });
+						SetCursorPos({ vOriginalPos.x + H::Draw.Scale(2), vOriginalPos.y + H::Draw.Scale(2) });
 						if (IconButton(bCurrentConfig ? ICON_MD_REFRESH : ICON_MD_DOWNLOAD))
 						{
 							if (!bVisual)
@@ -2352,15 +2351,22 @@ void CMenu::MenuSettings(int iTab)
 								F::Configs.LoadVisual(sConfigName);
 						}
 
-						SetCursorPos({ H::Draw.Scale(43), vOriginalPos.y + H::Draw.Scale(14) });
-						TextColored(bCurrentConfig ? F::Render.Active.Value : F::Render.Inactive.Value, TruncateText(sConfigName, GetWindowWidth() - GetStyle().WindowPadding.x * 2 - H::Draw.Scale(80)).c_str());
+						{
+							float flTextStartX = vOriginalPos.x + H::Draw.Scale(43);
+							ImVec2 vTextSize = FCalcTextSize(sConfigName.c_str());
+							SetCursorPos({ flTextStartX, vOriginalPos.y + (H::Draw.Scale(28) - vTextSize.y) / 2 });
+							float flRightButtonsPadding = H::Draw.Scale(9 + 25 * 2);
+							float flTextWidth = std::max(0.f, GetWindowWidth() - flRightButtonsPadding - flTextStartX);
+							TextColored(bCurrentConfig ? F::Render.Active.Value : F::Render.Inactive.Value, TruncateText(sConfigName, flTextWidth).c_str());
+						}
 
 						int iOffset = 9;
-						SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(9) });
+
+						SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(2) });
 						if (IconButton(ICON_MD_DELETE))
 							OpenPopup(std::format("Confirmation## Remove{}{}", sType, sConfigName).c_str());
 
-						SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(9) });
+						SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(2) });
 						if (IconButton(ICON_MD_SAVE))
 						{
 							if (!bCurrentConfig || !bVisual && !F::Configs.m_sCurrentVisuals.empty())
@@ -2424,16 +2430,11 @@ void CMenu::MenuSettings(int iTab)
 					DebugDummy({ 0, H::Draw.Scale(7) });
 				};
 
-			/* Column 1 */
 			TableNextColumn();
 			if (Section("Config"))
 			            {
                 static std::string sStaticName;
-                // Toggle to control whether debug vars are saved/loaded with configs
-                bool Hovered = false;
-                FToggle(Vars::Debug::AutoLoad, FToggleEnum::Left, &Hovered);
-                FTooltip("When enabled, saving/loading a config will also include debug variables (NOSAVE | DEBUGVAR and Vars::Debug::*). Hold SHIFT while saving to force-include all NOSAVE vars regardless.", Hovered);
-                Divider();
+                // Config list and actions
 
                 drawConfigs(sStaticName);
             } EndSection();
@@ -3001,6 +3002,9 @@ void CMenu::MenuSettings(int iTab)
 			FToggle(Vars::Debug::DrawHitboxes, FToggleEnum::Right);
 			FToggle(Vars::Debug::AntiAimLines, FToggleEnum::Left);
 			FToggle(Vars::Debug::CrashLogging, FToggleEnum::Right);
+			bool Hovered = false;
+			FToggle(Vars::Debug::AutoLoad, FToggleEnum::Left, &Hovered);
+			FTooltip("When enabled, saving/loading a config will also include debug variables (NOSAVE | DEBUGVAR and Vars::Debug::*). Hold SHIFT while saving to force-include all NOSAVE vars regardless.", Hovered);
 #ifdef DEBUG_TRACES
 			FToggle(Vars::Debug::VisualizeTraces, FToggleEnum::Left);
 			FToggle(Vars::Debug::VisualizeTraceHits, FToggleEnum::Right);
