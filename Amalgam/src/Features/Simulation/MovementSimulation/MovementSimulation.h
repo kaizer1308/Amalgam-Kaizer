@@ -97,6 +97,7 @@ private:
 	bool SetupMoveData(PlayerStorage& tStorage);
 	void GetAverageYaw(PlayerStorage& tStorage, int iSamples);
 	bool StrafePrediction(PlayerStorage& tStorage, int iSamples);
+	bool CounterStrafePrediction(PlayerStorage& tStorage, int iTicksToPredict);
 
 	void   ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const;
 	int    ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const; // returns a non-negative score

@@ -306,8 +306,8 @@ namespace Vars
 
 		SUBNAMESPACE_BEGIN(Projectile)
 			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11, DROPDOWN_MULTI, "Off",
-				VA_LIST("Air strafing", "Ground strafing"),
-				Air = 1 << 0, Ground = 1 << 1);
+				VA_LIST("Air strafing", "Ground strafing", "Counter strafing"),
+				Air = 1 << 0, Ground = 1 << 1, Counter = 1 << 2);
 			CVarEnum(SplashPrediction, VA_LIST("Splash", "Splash prediction"), 0, NONE, nullptr,
 				VA_LIST("Off", "Include", "Prefer", "Only"),
 				Off, Include, Prefer, Only);
