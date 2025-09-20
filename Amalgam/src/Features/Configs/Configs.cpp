@@ -366,10 +366,15 @@ bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 		{
 			boost::property_tree::ptree tSub;
 			const bool bNosave = GetAsyncKeyState(VK_SHIFT) & 0x8000;
+			const bool bIncludeDebug = Vars::Debug::AutoLoad[DEFAULT_BIND];
 			for (auto& pBase : G::Vars)
 			{
-				if (!bNosave && pBase->m_iFlags & NOSAVE)
-					continue;
+				if (!bNosave && (pBase->m_iFlags & NOSAVE))
+				{
+					bool bIsDebugVar = bIncludeDebug && ((pBase->m_iFlags & DEBUGVAR) || pBase->m_sName.rfind("Vars::Debug::", 0) == 0);
+					if (!bIsDebugVar)
+						continue;
+				}
 
 				Save(bool, tSub)
 				else Save(int, tSub)
@@ -442,8 +447,8 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 {
 	try
 	{
-	// Only log missing vars when this load is explicitly notified
-	struct ScopedLogToggle { ScopedLogToggle(bool v) { s_LogMissingVars = v; } ~ScopedLogToggle() { s_LogMissingVars = false; } } _toggle(bNotify);
+		// Only log missing vars when this load is explicitly notified
+		struct ScopedLogToggle { ScopedLogToggle(bool v) { s_LogMissingVars = v; } ~ScopedLogToggle() { s_LogMissingVars = false; } } _toggle(bNotify);
 
 		if (!std::filesystem::exists(m_sConfigPath + sConfigName + m_sConfigExtension))
 		{
@@ -483,14 +488,30 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 			}
 		}
 
+		// Check if config requests to include debug vars during load
+		bool bIncludeDebug = Vars::Debug::AutoLoad[DEFAULT_BIND];
+		if (auto tVarsPeek = tRead.get_child_optional("Vars"))
+		{
+			if (auto tAuto = tVarsPeek->get_child_optional("Vars::Debug::AutoLoad"))
+			{
+				// default bind key is "-1"
+				if (auto o = tAuto->get_optional<bool>(std::to_string(DEFAULT_BIND))) bIncludeDebug = *o;
+				else if (auto o2 = tAuto->get_optional<bool>("-1")) bIncludeDebug = *o2;
+			}
+		}
+
 		if (auto tSub = tRead.get_child_optional("Vars");
 			tSub || (tSub = tRead.get_child_optional("ConVars")))
 		{
 			const bool bNosave = GetAsyncKeyState(VK_SHIFT) & 0x8000;
 			for (auto& pBase : G::Vars)
 			{
-				if (!bNosave && pBase->m_iFlags & NOSAVE)
-					continue;
+				if (!bNosave && (pBase->m_iFlags & NOSAVE))
+				{
+					bool bIsDebugVar = bIncludeDebug && ((pBase->m_iFlags & DEBUGVAR) || pBase->m_sName.rfind("Vars::Debug::", 0) == 0);
+					if (!bIsDebugVar)
+						continue;
+				}
 
 				Load(bool, *tSub)
 				else Load(int, *tSub)

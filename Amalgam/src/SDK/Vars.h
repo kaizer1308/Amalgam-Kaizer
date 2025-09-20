@@ -306,8 +306,8 @@ namespace Vars
 
 		SUBNAMESPACE_BEGIN(Projectile)
 			CVarEnum(StrafePrediction, VA_LIST("Predict", "Strafe prediction"), 0b11, DROPDOWN_MULTI, "Off",
-				VA_LIST("Air strafing", "Ground strafing"),
-				Air = 1 << 0, Ground = 1 << 1);
+				VA_LIST("Air strafing", "Ground strafing", "Counter strafe"),
+				Air = 1 << 0, Ground = 1 << 1, CounterStrafe = 1 << 2);
 			CVarEnum(SplashPrediction, VA_LIST("Splash", "Splash prediction"), 0, NONE, nullptr,
 				VA_LIST("Off", "Include", "Prefer", "Only"),
 				Off, Include, Prefer, Only);
@@ -885,6 +885,7 @@ namespace Vars
 		CVar(DrawHitboxes, "Show hitboxes", false, NOSAVE);
 		CVar(AntiAimLines, "Antiaim lines", false);
 		CVar(CrashLogging, "Crash logging", true);
+		CVar(AutoLoad, "Auto load debug options", false);
 #ifdef DEBUG_TRACES
 		CVar(VisualizeTraces, "Visualize traces", false, NOSAVE);
 		CVar(VisualizeTraceHits, "Visualize trace hits", false, NOSAVE);

@@ -2427,11 +2427,16 @@ void CMenu::MenuSettings(int iTab)
 			/* Column 1 */
 			TableNextColumn();
 			if (Section("Config"))
-			{
-				static std::string sStaticName;
+			            {
+                static std::string sStaticName;
+                // Toggle to control whether debug vars are saved/loaded with configs
+                bool Hovered = false;
+                FToggle(Vars::Debug::AutoLoad, FToggleEnum::Left, &Hovered);
+                FTooltip("When enabled, saving/loading a config will also include debug variables (NOSAVE | DEBUGVAR and Vars::Debug::*). Hold SHIFT while saving to force-include all NOSAVE vars regardless.", Hovered);
+                Divider();
 
-				drawConfigs(sStaticName);
-			} EndSection();
+                drawConfigs(sStaticName);
+            } EndSection();
 			SetCursorPosX(GetCursorPosX() + 8);
 			PushStyleColor(ImGuiCol_Text, F::Render.Inactive.Value);
 			FText("Built @ " __DATE__ ", " __TIME__ ", " __CONFIGURATION__);

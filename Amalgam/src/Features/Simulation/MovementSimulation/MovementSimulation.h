@@ -75,6 +75,12 @@ struct PlayerStorage
 
 	std::vector<Vec3> m_vPath = {};
 
+	float m_flYawAbs = 0.f;
+	int m_iYawSign = 0;
+	int m_iStrafePeriod = 0;
+	int m_iTicksToFlip = -1;
+	float m_flCounterStrafeConfidence = 0.f;
+
 	bool m_bFailed = false;
 	bool m_bInitFailed = false;
 };
@@ -97,6 +103,7 @@ private:
 	bool SetupMoveData(PlayerStorage& tStorage);
 	void GetAverageYaw(PlayerStorage& tStorage, int iSamples);
 	bool StrafePrediction(PlayerStorage& tStorage, int iSamples);
+	bool CounterStrafePrediction(PlayerStorage& tStorage, int iSamples);
 
 	void   ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const;
 	int    ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const; // returns a non-negative score
