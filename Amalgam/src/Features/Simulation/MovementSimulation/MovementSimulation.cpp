@@ -308,7 +308,57 @@ void CMovementSimulation::Store()
 	}
 }
 
+bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int iTicksToPredict) // I hate scouts -seAn
+{
+    if (!tStorage.m_pPlayer || iTicksToPredict <= 0)
+        return false;
 
+    auto pPlayer = tStorage.m_pPlayer;
+    
+    Vec3 vCurrentVelocity = pPlayer->m_vecVelocity();
+    float flCurrentSpeed = vCurrentVelocity.Length2D();
+    
+    if (flCurrentSpeed < 10.0f) 
+        return false;
+    
+    Vec3 vCurrentDirection = vCurrentVelocity.Normalized2D();
+    
+    PlayerStorage tempStorage = tStorage;
+    std::vector<Vec3> predictedVelocities;
+    
+    predictedVelocities.push_back(vCurrentVelocity);
+    
+    for (int i = 0; i < iTicksToPredict; i++)
+    {
+        RunTick(tempStorage, false);
+        predictedVelocities.push_back(tempStorage.m_MoveData.m_vecVelocity);
+    }
+    
+    Vec3 vFinalVelocity = predictedVelocities.back();
+    float flFinalSpeed = vFinalVelocity.Length2D();
+    
+    if (flFinalSpeed < flCurrentSpeed * 0.7f)
+    {
+        Vec3 vFinalDirection = vFinalVelocity.Normalized2D();
+        float flDotProduct = vCurrentDirection.Dot(vFinalDirection);
+        
+        Vec3 vCross = vCurrentDirection.Cross(vFinalDirection);
+        float flCrossZ = vCross.z;
+        
+        if (flDotProduct < 0.7f)
+        {
+            float flAdjustmentFactor = 1.0f - (flDotProduct + 1.0f) * 0.5f; // 0 to 1 scale
+            
+            Vec3 vAdjustedVelocity = vCurrentVelocity + (vFinalVelocity - vCurrentVelocity) * flAdjustmentFactor;
+            
+            tStorage.m_MoveData.m_vecVelocity = vAdjustedVelocity;
+            
+            return true;
+        }
+    }
+    
+    return false;
+}
 
 bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStorage, bool bHitchance, bool bStrafe)
 {
@@ -370,6 +420,8 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 
 	// calculate strafe if desired
 	bool bCalculated = bStrafe ? StrafePrediction(tStorage, iStrafeSamples) : false;
+	
+	CounterStrafePrediction(tStorage, 3); // you can adjust the ticks used
 
 	// really hope this doesn't work like shit
 	if (bHitchance && bCalculated && !pPlayer->m_vecVelocity().IsZero())
