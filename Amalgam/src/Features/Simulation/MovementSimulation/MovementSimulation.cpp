@@ -308,7 +308,7 @@ void CMovementSimulation::Store()
 	}
 }
 
-bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int iTicksToPredict) // I hate scouts -seAn
+bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int iTicksToPredict) // work, thanks
 {
     if (!tStorage.m_pPlayer || iTicksToPredict <= 0)
         return false;
@@ -328,36 +328,54 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
     
     predictedVelocities.push_back(vCurrentVelocity);
     
+    Vec3 lastVelocity = vCurrentVelocity;
+    
+    // Always run prediction ticks
     for (int i = 0; i < iTicksToPredict; i++)
     {
         RunTick(tempStorage, false);
-        predictedVelocities.push_back(tempStorage.m_MoveData.m_vecVelocity);
+        Vec3 currentVel = tempStorage.m_MoveData.m_vecVelocity;
+        predictedVelocities.push_back(currentVel);
+        lastVelocity = currentVel;
     }
     
     Vec3 vFinalVelocity = predictedVelocities.back();
-    float flFinalSpeed = vFinalVelocity.Length2D();
     
-    if (flFinalSpeed < flCurrentSpeed * 0.7f)
+    Vec3 vAverageVelocity = Vec3();
+    for (const auto& vel : predictedVelocities)
     {
-        Vec3 vFinalDirection = vFinalVelocity.Normalized2D();
-        float flDotProduct = vCurrentDirection.Dot(vFinalDirection);
-        
-        Vec3 vCross = vCurrentDirection.Cross(vFinalDirection);
-        float flCrossZ = vCross.z;
-        
-        if (flDotProduct < 0.7f)
-        {
-            float flAdjustmentFactor = 1.0f - (flDotProduct + 1.0f) * 0.5f; // 0 to 1 scale
-            
-            Vec3 vAdjustedVelocity = vCurrentVelocity + (vFinalVelocity - vCurrentVelocity) * flAdjustmentFactor;
-            
-            tStorage.m_MoveData.m_vecVelocity = vAdjustedVelocity;
-            
-            return true;
-        }
+        vAverageVelocity += vel;
+    }
+    vAverageVelocity /= static_cast<float>(predictedVelocities.size());
+    
+    float flBaseWeight = 0.35f; // Base weight for current velocity
+    float flPredictWeight = 0.65f; // Base weight for predicted velocity
+    
+    float flSpeedRatio = vFinalVelocity.Length2D() / flCurrentSpeed;
+    if (flSpeedRatio < 0.8f)
+    {
+        flBaseWeight = 0.25f;
+        flPredictWeight = 0.75f;
+    }
+    else if (flSpeedRatio > 1.2f)
+    {
+        flBaseWeight = 0.45f;
+        flPredictWeight = 0.55f;
     }
     
-    return false;
+    Vec3 vFinalDirection = vFinalVelocity.Normalized2D();
+    float flDotProduct = vCurrentDirection.Dot(vFinalDirection);
+    
+    if (flDotProduct < 0.7f)
+    {
+        flBaseWeight -= 0.15f;
+        flPredictWeight += 0.15f;
+    }
+    
+    Vec3 vAdjustedVelocity = vCurrentVelocity * flBaseWeight + vAverageVelocity * flPredictWeight;
+    tStorage.m_MoveData.m_vecVelocity = vAdjustedVelocity;
+    
+    return true;
 }
 
 bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStorage, bool bHitchance, bool bStrafe)
@@ -662,21 +680,64 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 	I::GlobalVars->frametime = I::Prediction->m_bEnginePaused ? 0.f : TICK_INTERVAL;
 	SetBounds(tStorage.m_pPlayer);
 
-	    if (tStorage.m_flAverageYaw)
+    Vec3 vCurrentVelocity = tStorage.m_MoveData.m_vecVelocity;
+    float flCurrentSpeed = vCurrentVelocity.Length2D();
+    
+    float flFriction = 1.0f;
+    if (tStorage.m_bDirectMove)
     {
-        if (!tStorage.m_bDirectMove && !tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE))
+        static auto sv_friction = U::ConVars.FindVar("sv_friction");
+        float flSurfaceFriction = 1.0f;
+        
+        if (flCurrentSpeed > 0.1f)
         {
-            // apply raw measured yaw per tick for air strafing
-            tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw;
-        }
-        else
-        {
-            // apply raw measured yaw per tick for ground strafing
-            tStorage.m_MoveData.m_vecViewAngles.y += tStorage.m_flAverageYaw;
+            float flControl = (flCurrentSpeed < 30.0f) ? 30.0f : flCurrentSpeed;
+            flFriction = flControl * sv_friction->GetFloat() * flSurfaceFriction * I::GlobalVars->frametime;
+            
+            float flNewSpeed = flCurrentSpeed - flFriction;
+            if (flNewSpeed < 0.1f)
+                flNewSpeed = 0.0f;
+                
+            if (flCurrentSpeed > 0.0f)
+                flFriction = 1.0f - (flNewSpeed / flCurrentSpeed);
         }
     }
-	else if (!tStorage.m_bDirectMove)
-		tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;
+    
+    if (tStorage.m_flAverageYaw)
+    {
+        float flTurnRateAdjustment = 1.0f;
+        
+        if (flCurrentSpeed > 50.0f)
+        {
+            flTurnRateAdjustment = std::min(1.0f, 250.0f / flCurrentSpeed);
+        }
+        
+        if (!tStorage.m_bDirectMove && !tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE))
+        {
+            float flAdjustedYaw = tStorage.m_flAverageYaw * flTurnRateAdjustment;
+            tStorage.m_MoveData.m_vecViewAngles.y += flAdjustedYaw;
+            
+            if (flCurrentSpeed > 30.0f)
+            {
+                float flYawRadians = flAdjustedYaw * 0.017453f; // Convert to radians
+                Vec3 vAdjustedVelocity;
+                float cs = cos(flYawRadians);
+                float sn = sin(flYawRadians);
+                vAdjustedVelocity.x = vCurrentVelocity.x * cs - vCurrentVelocity.y * sn;
+                vAdjustedVelocity.y = vCurrentVelocity.x * sn + vCurrentVelocity.y * cs;
+                vAdjustedVelocity.z = vCurrentVelocity.z;
+                
+                tStorage.m_MoveData.m_vecVelocity = vCurrentVelocity * 0.2f + vAdjustedVelocity * 0.8f;
+            }
+        }
+        else // Ground movement
+        {
+            float flAdjustedYaw = tStorage.m_flAverageYaw * (1.0f - flFriction * 0.5f) * flTurnRateAdjustment;
+            tStorage.m_MoveData.m_vecViewAngles.y += flAdjustedYaw;
+        }
+    }
+    else if (!tStorage.m_bDirectMove)
+        tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;
 
 	float flOldSpeed = tStorage.m_MoveData.m_flClientMaxSpeed;
 	if (tStorage.m_pPlayer->m_bDucked() && tStorage.m_pPlayer->IsOnGround() && !tStorage.m_pPlayer->IsSwimming())
