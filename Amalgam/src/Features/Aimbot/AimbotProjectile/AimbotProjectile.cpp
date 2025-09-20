@@ -7,6 +7,7 @@
 #include "../../Visuals/Visuals.h"
 #include "../AutoAirblast/AutoAirblast.h"
 #include "../AutoHeal/AutoHeal.h"
+#include <cfloat>
 
 //#define SPLASH_DEBUG1 // normal splash visualization
 //#define SPLASH_DEBUG2 // obstructed splash visualization
@@ -909,122 +910,155 @@ std::vector<Point_t> CAimbotProjectile::GetSplashPointsSimple(Target_t& tTarget,
 
 static inline float AABBLine(Vec3 vMins, Vec3 vMaxs, Vec3 vStart, Vec3 vDir)
 {
-	Vec3 a = {
-		(vMins.x - vStart.x) / vDir.x,
-		(vMins.y - vStart.y) / vDir.y,
-		(vMins.z - vStart.z) / vDir.z
-	};
-	Vec3 b = {
-		(vMaxs.x - vStart.x) / vDir.x,
-		(vMaxs.y - vStart.y) / vDir.y,
-		(vMaxs.z - vStart.z) / vDir.z
-	};
-	Vec3 c = {
-		std::min(a.x, b.x),
-		std::min(a.y, b.y),
-		std::min(a.z, b.z)
-	};
-	return std::max(std::max(c.x, c.y), c.z);
+    // Robust against zero components in vDir; return clamped intersection factor along vDir
+    auto sdiv = [](float num, float den) -> float
+        {
+            return fabsf(den) < 1e-6f ? (num >= 0.f ? FLT_MAX : -FLT_MAX) : num / den;
+        };
+
+    Vec3 a = {
+        sdiv(vMins.x - vStart.x, vDir.x),
+        sdiv(vMins.y - vStart.y, vDir.y),
+        sdiv(vMins.z - vStart.z, vDir.z)
+    };
+    Vec3 b = {
+        sdiv(vMaxs.x - vStart.x, vDir.x),
+        sdiv(vMaxs.y - vStart.y, vDir.y),
+        sdiv(vMaxs.z - vStart.z, vDir.z)
+    };
+    Vec3 c = {
+        std::min(a.x, b.x),
+        std::min(a.y, b.y),
+        std::min(a.z, b.z)
+    };
+    float t = std::max(std::max(c.x, c.y), c.z);
+    if (!(t == t) || fabsf(t) > 1e30f)
+        t = 1.f;
+    return t;
 }
+
 static inline Vec3 PullPoint(Vec3 vPoint, Vec3 vLocalPos, Info_t& tInfo, Vec3 vMins, Vec3 vMaxs, Vec3 vTargetPos)
 {
-	auto HeightenLocalPos = [&]()
-		{	// basic trajectory pass
-			const float flGrav = tInfo.m_flGravity * 800.f;
-			if (!flGrav)
-				return vPoint;
+    auto HeightenLocalPos = [&]() -> Vec3
+        {
+            const float flGrav = tInfo.m_flGravity * 800.f;
+            if (!flGrav)
+                return vLocalPos;
 
-			const Vec3 vDelta = vTargetPos - vLocalPos;
-			const float flDist = vDelta.Length2D();
+            const Vec3 vDelta = vTargetPos - vLocalPos;
+            const float flDist = vDelta.Length2D();
 
-			const float flRoot = pow(tInfo.m_flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * pow(tInfo.m_flVelocity, 2));
-			if (flRoot < 0.f)
-				return vPoint;
-			float flPitch = atan((pow(tInfo.m_flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
+            const float v2 = tInfo.m_flVelocity * tInfo.m_flVelocity;
+            const float disc = v2 * v2 - flGrav * (flGrav * (flDist * flDist) + 2.f * vDelta.z * v2);
+            if (disc < 0.f)
+                return vLocalPos;
+            const float flPitch = atan((v2 - sqrtf(disc)) / (flGrav * flDist));
 
-			float flTime = flDist / (cos(flPitch) * tInfo.m_flVelocity) - tInfo.m_flOffsetTime;
-			return vLocalPos + Vec3(0, 0, (flGrav * pow(flTime, 2)) / 2);
-		};
+            const float flTime = flDist / (cosf(flPitch) * tInfo.m_flVelocity) - tInfo.m_flOffsetTime;
+            return vLocalPos + Vec3(0.f, 0.f, (flGrav * flTime * flTime) / 2.f);
+        };
 
-	vLocalPos = HeightenLocalPos();
-	Vec3 vForward, vRight, vUp; Math::AngleVectors(Math::CalcAngle(vLocalPos, vPoint), &vForward, &vRight, &vUp);
-	vLocalPos += (vForward * tInfo.m_vOffset.x) + (vRight * tInfo.m_vOffset.y) + (vUp * tInfo.m_vOffset.z);
-	return vLocalPos + (vPoint - vLocalPos) * fabsf(AABBLine(vMins + vTargetPos, vMaxs + vTargetPos, vLocalPos, vPoint - vLocalPos));
+    vLocalPos = HeightenLocalPos();
+    Vec3 vForward, vRight, vUp; Math::AngleVectors(Math::CalcAngle(vLocalPos, vPoint), &vForward, &vRight, &vUp);
+    vLocalPos += (vForward * tInfo.m_vOffset.x) + (vRight * tInfo.m_vOffset.y) + (vUp * tInfo.m_vOffset.z);
+    // project segment to target AABB; clamp pathological t inside AABBLine
+    return vLocalPos + (vPoint - vLocalPos) * fabsf(AABBLine(vMins + vTargetPos, vMaxs + vTargetPos, vLocalPos, vPoint - vLocalPos));
 }
 
-
+// ...
 
 static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLocalPos, const Vec3& vTargetPos, float& flVelocity, float& flDragTime, const float flGravity)
 {
-	if (!F::ProjSim.m_pObj->IsDragEnabled() || F::ProjSim.m_pObj->m_dragBasis.IsZero())
-		return;
+    // provide a better time fudge for drag-affected projectiles using a simple exponential model on horizontal motion.
+    if (!F::ProjSim.m_pObj->IsDragEnabled() || F::ProjSim.m_pObj->m_dragBasis.IsZero())
+        return;
 
-	const float flGrav = flGravity * 800.0f;
-	const Vec3 vDelta = vTargetPos - vLocalPos;
-	const float flDist = vDelta.Length2D();
+    const float flGrav = flGravity * 800.0f;
+    const Vec3 vDelta = vTargetPos - vLocalPos;
+    const float flDist = vDelta.Length2D();
 
-	const float flRoot = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * pow(flVelocity, 2));
-	if (flRoot < 0.f)
-		return;
+    // solve pitch ignoring drag to estimate initial horizontal speed
+    const float v2 = flVelocity * flVelocity;
+    const float disc = v2 * v2 - flGrav * (flGrav * (flDist * flDist) + 2.f * vDelta.z * v2);
+    if (disc < 0.f)
+        return;
+    const float pitch0 = atan((v2 - sqrtf(disc)) / (flGrav * flDist));
+    const float v0h = std::max(1e-3f, flVelocity * cosf(pitch0));
 
-	const float flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
-	const float flTime = flDist / (cos(flPitch) * flVelocity);
+    // derive drag coefficient for the weapon, optionally overridden by a cvar
+    float flDrag = 0.f;
+    if (Vars::Aimbot::Projectile::DragOverride.Value)
+        flDrag = Vars::Aimbot::Projectile::DragOverride.Value;
+    else
+    {
+        switch (pWeapon->m_iItemDefinitionIndex())
+        {
+        case Demoman_m_GrenadeLauncher:
+        case Demoman_m_GrenadeLauncherR:
+        case Demoman_m_FestiveGrenadeLauncher:
+        case Demoman_m_Autumn:
+        case Demoman_m_MacabreWeb:
+        case Demoman_m_Rainbow:
+        case Demoman_m_SweetDreams:
+        case Demoman_m_CoffinNail:
+        case Demoman_m_TopShelf:
+        case Demoman_m_Warhawk:
+        case Demoman_m_ButcherBird:
+        case Demoman_m_TheIronBomber: flDrag = Math::RemapVal(flVelocity, 1217.f, k_flMaxVelocity, 0.120f, 0.200f); break;
+        case Demoman_m_TheLochnLoad:   flDrag = Math::RemapVal(flVelocity, 1504.f, k_flMaxVelocity, 0.070f, 0.085f); break;
+        case Demoman_m_TheLooseCannon: flDrag = Math::RemapVal(flVelocity, 1454.f, k_flMaxVelocity, 0.385f, 0.530f); break;
+        case Demoman_s_StickybombLauncher:
+        case Demoman_s_StickybombLauncherR:
+        case Demoman_s_FestiveStickybombLauncher:
+        case Demoman_s_TheQuickiebombLauncher:
+        case Demoman_s_TheScottishResistance: flDrag = Math::RemapVal(flVelocity, 922.f, k_flMaxVelocity, 0.085f, 0.190f); break;
+        case Scout_s_TheFlyingGuillotine:
+        case Scout_s_TheFlyingGuillotineG: flDrag = 0.310f; break;
+        case Scout_t_TheSandman:            flDrag = 0.180f; break;
+        case Scout_t_TheWrapAssassin:       flDrag = 0.285f; break;
+        case Scout_s_MadMilk:
+        case Scout_s_MutatedMilk:
+        case Sniper_s_Jarate:
+        case Sniper_s_FestiveJarate:
+        case Sniper_s_TheSelfAwareBeautyMark: flDrag = 0.057f; break;
+        default: break;
+        }
+    }
 
-	float flDrag = 0.f;
-	if (Vars::Aimbot::Projectile::DragOverride.Value)
-		flDrag = Vars::Aimbot::Projectile::DragOverride.Value;
-	else
-	{
-		switch (pWeapon->m_iItemDefinitionIndex()) // the remaps are dumb but they work so /shrug
-		{
-		case Demoman_m_GrenadeLauncher:
-		case Demoman_m_GrenadeLauncherR:
-		case Demoman_m_FestiveGrenadeLauncher:
-		case Demoman_m_Autumn:
-		case Demoman_m_MacabreWeb:
-		case Demoman_m_Rainbow:
-		case Demoman_m_SweetDreams:
-		case Demoman_m_CoffinNail:
-		case Demoman_m_TopShelf:
-		case Demoman_m_Warhawk:
-		case Demoman_m_ButcherBird:
-		case Demoman_m_TheIronBomber: flDrag = Math::RemapVal(flVelocity, 1217.f, k_flMaxVelocity, 0.120f, 0.200f); break; // 0.120 normal, 0.200 capped, 0.300 v3000
-		case Demoman_m_TheLochnLoad: flDrag = Math::RemapVal(flVelocity, 1504.f, k_flMaxVelocity, 0.070f, 0.085f); break; // 0.070 normal, 0.085 capped, 0.120 v3000
-		case Demoman_m_TheLooseCannon: flDrag = Math::RemapVal(flVelocity, 1454.f, k_flMaxVelocity, 0.385f, 0.530f); break; // 0.385 normal, 0.530 capped, 0.790 v3000
-		case Demoman_s_StickybombLauncher:
-		case Demoman_s_StickybombLauncherR:
-		case Demoman_s_FestiveStickybombLauncher:
-		case Demoman_s_TheQuickiebombLauncher:
-		case Demoman_s_TheScottishResistance: flDrag = Math::RemapVal(flVelocity, 922.f, k_flMaxVelocity, 0.085f, 0.190f); break; // 0.085 low, 0.190 capped, 0.230 v2400
-		case Scout_s_TheFlyingGuillotine:
-		case Scout_s_TheFlyingGuillotineG: flDrag = 0.310f; break;
-		case Scout_t_TheSandman: flDrag = 0.180f; break;
-		case Scout_t_TheWrapAssassin: flDrag = 0.285f; break;
-		case Scout_s_MadMilk:
-		case Scout_s_MutatedMilk:
-		case Sniper_s_Jarate:
-		case Sniper_s_FestiveJarate:
-		case Sniper_s_TheSelfAwareBeautyMark: flDrag = 0.057f; break;
-		}
-	}
+    if (flDrag <= 0.f)
+        return;
 
-	float flOverride = Vars::Aimbot::Projectile::TimeOverride.Value;
-	flDragTime = powf(flTime, 2) * flDrag / (flOverride ? flOverride : 1.5f); // rough estimate to prevent m_flTime being too low
-	flVelocity = flVelocity - flVelocity * flTime * flDrag;
+    // s(t) = v0h/drag * (1 - exp(-drag * t))
+    // invert to estimate time
+    float denom = 1.f - (flDrag * flDist) / v0h;
+    if (denom <= 1e-3f)
+    {
+        // close to asymptote (very long range). provide capped fudge rather than blow up xd
+        const float tNoDrag = flDist / v0h;
+        flDragTime = std::min(tNoDrag, 1.0f);
+        return;
+    }
+
+    const float tHoriz = -logf(denom) / flDrag;
+    const float tNoDrag2 = flDist / v0h;
+    // cap to 1s to avoid extreme corrections
+    flDragTime = std::clamp(tHoriz - tNoDrag2, 0.f, 1.0f);
 }
+
 static inline float GetVerticalBoost(CTFWeaponBase* pWeapon)
 {
-	if (!pWeapon) return 0.f;
-	switch (pWeapon->GetWeaponID())
-	{
-	case TF_WEAPON_GRENADELAUNCHER:
-	case TF_WEAPON_PIPEBOMBLAUNCHER:
-	case TF_WEAPON_CANNON:
-		return 200.f; // initial upward velocity applied to pipes/stickies/cannonballs
-	default:
-		return 0.f;
-	}
+    if (!pWeapon) return 0.f;
+    switch (pWeapon->GetWeaponID())
+    {
+    case TF_WEAPON_GRENADELAUNCHER:
+    case TF_WEAPON_PIPEBOMBLAUNCHER:
+    case TF_WEAPON_CANNON:
+        return 200.f; // initial upward velocity applied to pipes/stickies/cannonballs
+    default:
+        return 0.f;
+    }
 }
+
 void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy)
 {
 	if (out.m_iCalculated != CalculatedEnum::Pending)
@@ -1153,7 +1187,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 			float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
 			float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
 			float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
-			float flDesired = iSimTime > 0 ? TICKS_TO_TIME(iSimTime) : std::min(flTimeLow, flTimeHigh);
+			float flDesired = iSimTime > 0 ? (TICKS_TO_TIME(iSimTime) - flDragTime) : std::min(flTimeLow, flTimeHigh);
 			out.m_flPitch = fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired) ? flPitchHigh : flPitchLow;
 		}
 		out.m_flTime = flDist / (cos(out.m_flPitch) * flVelocity) + flDragTime;

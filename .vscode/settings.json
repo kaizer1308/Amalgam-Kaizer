@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "vector": "cpp",
+        "utility": "cpp"
+    },
+    "chat.agent.maxRequests": 50
+}

@@ -135,13 +135,11 @@ public:
 				return pProjectile->As<CTFProjectile_Rocket>()->m_vInitialVelocity();
 			break;
 		case ETFClassID::CTFProjectile_Arrow:
-			if (!pProjectile->As<CTFProjectile_Rocket>()->m_iDeflected())
-				return { 
-					pProjectile->As<CTFProjectile_Rocket>()->m_vInitialVelocity().x,
-					pProjectile->As<CTFProjectile_Rocket>()->m_vInitialVelocity().y,
-					pProjectile->GetAbsVelocity().z
-				};
-			break;
+		{
+			// Arrow initial velocity is networked; keep current vertical component which may be influenced by gravity
+			const Vec3 init = pProjectile->As<CTFProjectile_Arrow>()->m_vInitialVelocity();
+			return { init.x, init.y, pProjectile->GetAbsVelocity().z };
+		}
 		}
 		return pProjectile->GetAbsVelocity();
 	}
