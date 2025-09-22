@@ -423,12 +423,33 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, PlayerStorage& tStora
 		{
 			float maxSpeed = std::max(tStorage.m_MoveData.m_flMaxSpeed, 1.f);
 			float speedFrac = std::clamp(tStorage.m_MoveData.m_vecVelocity.Length2D() / maxSpeed, 0.f, 1.f);
-			required = 0.5f + 0.25f * speedFrac + 0.25f * (1.f - conf); // 50%..100% before final adjustment
-			required = std::clamp(required, 0.35f, 0.95f);
+			float instability = std::clamp(tStorage.m_flStability / 8.f, 0.f, 1.f);
+			float coverage = iStrafeSamples > 0 ? std::clamp((float(std::max<size_t>(iSamples, size_t(1)) - 1) / float(iStrafeSamples)), 0.f, 1.f) : 1.f;
+
+			float flDistance = 0.f;
+			if (auto pLocal = H::Entities.GetLocal())
+				flDistance = pLocal->m_vecOrigin().DistTo(pPlayer->m_vecOrigin());
+
+			float base = 0.62f;
+			if (flDistance <= 800.f)
+				base = Math::RemapVal(flDistance, 0.f, 800.f, 0.78f, 0.65f);
+			else
+				base = Math::RemapVal(flDistance, 800.f, 1800.f, 0.65f, 0.52f);
+			base = std::clamp(base, 0.50f, 0.80f);
+
+			float adjust = 1.f;
+			adjust *= (1.f + 0.20f * speedFrac);
+			adjust *= (1.f + 0.15f * instability);
+			adjust *= (1.f - 0.30f * conf);
+			adjust *= (1.f + 0.10f * (1.f - coverage));
+			adjust = std::clamp(adjust, 0.70f, 1.30f);
+
+			required = std::clamp(base * adjust, 0.30f, 0.90f);
+			required *= (1.f - 0.25f * conf);
+			required = std::clamp(required, 0.10f, 0.90f);
 		}
-		required *= (1.f - 0.1f * conf);
-		required = std::clamp(required, 0.1f, 0.95f);
-	if (flCurrentChance < required)
+
+		if (flCurrentChance < required)
 		{
 			{
 		std::ostringstream oss; oss << "Hitchance (" << flCurrentChance * 100 << "% < " << (required * 100.f) << "%)";
@@ -488,6 +509,19 @@ bool CMovementSimulation::SetupMoveData(PlayerStorage& tStorage)
 				tStorage.m_MoveData.m_flUpMove = s_tDummyCmd.upmove;
 			}
 		}
+
+		if ((tStorage.m_MoveData.m_flForwardMove == 0.f && tStorage.m_MoveData.m_flSideMove == 0.f)
+			&& !tStorage.m_MoveData.m_vecVelocity.To2D().IsZero())
+		{
+			Vec3 vDir = tStorage.m_MoveData.m_vecVelocity.Normalized2D() * tStorage.m_MoveData.m_flMaxSpeed;
+			s_tDummyCmd.forwardmove = vDir.x;
+			s_tDummyCmd.sidemove = -vDir.y;
+			s_tDummyCmd.upmove = 0.f;
+			SDK::FixMovement(&s_tDummyCmd, {}, tStorage.m_MoveData.m_vecViewAngles);
+			tStorage.m_MoveData.m_flForwardMove = s_tDummyCmd.forwardmove;
+			tStorage.m_MoveData.m_flSideMove = s_tDummyCmd.sidemove;
+			tStorage.m_MoveData.m_flUpMove = s_tDummyCmd.upmove;
+		}
 	}
 
 	tStorage.m_MoveData.m_vecAngles = tStorage.m_MoveData.m_vecOldAngles = tStorage.m_MoveData.m_vecViewAngles;
@@ -505,14 +539,85 @@ bool CMovementSimulation::SetupMoveData(PlayerStorage& tStorage)
 	tStorage.m_vPredictedOrigin = tStorage.m_MoveData.m_vecAbsOrigin;
 	tStorage.m_bDirectMove = tStorage.m_pPlayer->IsOnGround() || tStorage.m_pPlayer->IsSwimming();
 
-	return true;
+    return true;
 }
 
 static inline float GetGravity()
 {
-	static auto sv_gravity = U::ConVars.FindVar("sv_gravity");
+    static auto sv_gravity = U::ConVars.FindVar("sv_gravity");
 
-	return sv_gravity->GetFloat();
+    return sv_gravity->GetFloat();
+}
+
+bool CMovementSimulation::DetectLedgeAndClamp(PlayerStorage& tStorage, float yawStep)
+{
+    if (!tStorage.m_pPlayer)
+        return false;
+
+    auto pPlayer = tStorage.m_pPlayer;
+
+    if (!pPlayer->IsOnGround() || pPlayer->IsSwimming() || pPlayer->InCond(TF_COND_SHIELD_CHARGE))
+        return false;
+
+    float cmdF = tStorage.m_MoveData.m_flForwardMove;
+    float cmdS = tStorage.m_MoveData.m_flSideMove;
+    float cmdMag = sqrtf(cmdF * cmdF + cmdS * cmdS);
+    float velMag = tStorage.m_MoveData.m_vecVelocity.Length2D();
+
+    float yaw = tStorage.m_MoveData.m_vecViewAngles.y; // already includes yawStep if applied before
+    constexpr float kPi = 3.14159265358979323846f;
+    float rad = yaw * (kPi / 180.f);
+    Vec3 fwd(cosf(rad), sinf(rad), 0.f);
+    Vec3 right(-sinf(rad), cosf(rad), 0.f);
+    Vec3 wish = fwd * cmdF + right * cmdS;
+    if (wish.To2D().IsZero())
+    {
+        if (velMag < 1.f)
+            return false;
+        wish = tStorage.m_MoveData.m_vecVelocity; wish.z = 0.f;
+    }
+    Vec3 wishDir = wish.Normalized2D();
+    Vec3 mins = pPlayer->m_vecMins() + 0.125f;
+    Vec3 maxs = pPlayer->m_vecMaxs() - 0.125f;
+    int nMask = pPlayer->SolidMask();
+    CTraceFilterWorldAndPropsOnly filter = {};
+
+    CGameTrace trFwd = {};
+    Vec3 start = tStorage.m_MoveData.m_vecAbsOrigin + Vec3(0, 0, 2);
+    float aheadDist = std::clamp(velMag * TICK_INTERVAL, 8.f, 24.f);
+    Vec3 end = start + wishDir * aheadDist;
+    SDK::TraceHull(start, end, mins, maxs, nMask, &filter, &trFwd);
+
+    Vec3 edgePos = trFwd.endpos;
+    CGameTrace trDown = {};
+    SDK::Trace(edgePos + Vec3(0, 0, 2), edgePos + Vec3(0, 0, -64), nMask, &filter, &trDown);
+
+    bool noGround = !trDown.DidHit();
+    float drop = noGround ? 9999.f : (edgePos.z - trDown.endpos.z);
+    bool bigDrop = drop > 20.f;
+
+    if (noGround || bigDrop)
+    {
+        bool likelyJump = false;
+        auto& recs = m_mRecords[pPlayer->entindex()];
+        if (recs.size() >= 2)
+        {
+            const auto& r0 = recs[0];
+            const auto& r1 = recs[1];
+            float dvz = r0.m_vVelocity.z - r1.m_vVelocity.z;
+            if (r0.m_iMode == 1 || dvz > 60.f)
+                likelyJump = true;
+        }
+
+        if (!likelyJump)
+        {
+            tStorage.m_MoveData.m_flForwardMove = 0.f;
+            if (cmdMag < 50.f)
+                tStorage.m_MoveData.m_flSideMove = 0.f;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool CMovementSimulation::StrafePrediction(PlayerStorage& tStorage, int iSamples)
@@ -660,9 +765,25 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 
         if (yawStep)
             tStorage.m_MoveData.m_vecViewAngles.y += yawStep;
+
+        if (!tStorage.m_bDirectMove)
+        {
+            if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
+                tStorage.m_MoveData.m_flSideMove = (yawStep >= 0.f ? 450.f : -450.f);
+        }
+
+        if (tStorage.m_bDirectMove && tStorage.m_flCounterStrafeConfidence > 0.3f && tStorage.m_iStrafePeriod > 0 && tStorage.m_flYawAbs > 0.f)
+        {
+            if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
+                tStorage.m_MoveData.m_flSideMove = (tStorage.m_iYawSign >= 0 ? 450.f : -450.f);
+        }
+
+        DetectLedgeAndClamp(tStorage, yawStep);
     }
-	else if (!tStorage.m_bDirectMove)
-		tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;
+    else if (!tStorage.m_bDirectMove)
+        tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;
+
+    DetectLedgeAndClamp(tStorage, 0.f);
 
 	float flOldSpeed = tStorage.m_MoveData.m_flClientMaxSpeed;
 	if (tStorage.m_pPlayer->m_bDucked() && tStorage.m_pPlayer->IsOnGround() && !tStorage.m_pPlayer->IsSwimming())

@@ -108,6 +108,7 @@ private:
 	void   ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const;
 	int    ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const; // returns a non-negative score
 	float  EstimateCurvatureYawPerTick(const std::deque<MoveData>& recs, int maxSamples, int& outUsedTicks) const;
+	bool   DetectLedgeAndClamp(PlayerStorage& tStorage, float yawStep);
 
 	void SetBounds(CTFPlayer* pPlayer);
 	void RestoreBounds(CTFPlayer* pPlayer);
