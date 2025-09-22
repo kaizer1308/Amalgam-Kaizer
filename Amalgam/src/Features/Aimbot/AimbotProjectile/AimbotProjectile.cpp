@@ -202,8 +202,6 @@ float CAimbotProjectile::GetSplashRadius(CTFWeaponBase* pWeapon, CTFPlayer* pPla
 	case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
 	case TF_WEAPON_PARTICLE_CANNON:
 	case TF_WEAPON_PIPEBOMBLAUNCHER:
-	case TF_WEAPON_GRENADELAUNCHER:
-	case TF_WEAPON_CANNON:
 		flRadius = 146.f;
 		break;
 	case TF_WEAPON_FLAREGUN:
@@ -274,8 +272,6 @@ static inline int GetSplashMode(CTFWeaponBase* pWeapon)
 		case TF_WEAPON_ROCKETLAUNCHER:
 		case TF_WEAPON_ROCKETLAUNCHER_DIRECTHIT:
 		case TF_WEAPON_PARTICLE_CANNON:
-		case TF_WEAPON_GRENADELAUNCHER:
-		case TF_WEAPON_CANNON:
 			return Vars::Aimbot::Projectile::RocketSplashMode.Value;
 		}
 	}
@@ -813,7 +809,6 @@ void CAimbotProjectile::SetupSplashPoints(Target_t& tTarget, std::vector<std::pa
 		if (solution.m_iCalculated != CalculatedEnum::Bad)
 			TracePoint(vPoint, iType, vTargetEye, m_tInfo, vSimplePoints, checkPoint, i++);
 	}
-
 }
 
 std::vector<Point_t> CAimbotProjectile::GetSplashPointsSimple(Target_t& tTarget, std::vector<std::pair<Vec3, Vec3>>& vSpherePoints, int iSimTime)
@@ -1090,7 +1085,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		else
 		{	// arch: low vs high arc selection
 			float flV2 = pow(flVelocity, 2);
-			float flRoot = flV2 * flV2 - flGrav * (flGrav * (flDist * flDist) + 2.f * vDelta.z * flV2);
+			float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
 			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
 			float flSqrt = sqrt(flRoot);
@@ -1385,7 +1380,7 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Tar
 					}
 
 					CGameTrace eyeTrace = {};
-					SDK::Trace(vFrom, tTarget.m_vPos + m_tInfo.m_vTargetEye, MASK_SHOT, &filter, &eyeTrace);
+					SDK::Trace(vFrom, tTarget.m_vPos + tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset(), MASK_SHOT, &filter, &eyeTrace);
 					bValid = eyeTrace.fraction == 1.f;
 #ifdef SPLASH_DEBUG6
 					s_mTraceCount["Eye trace"]++;
@@ -1501,7 +1496,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 
 	m_tInfo = { pLocal, pWeapon };
 	m_tInfo.m_vLocalEye = pLocal->GetShootPos();
-	m_tInfo.m_vTargetEye = tTarget.m_iTargetType == TargetEnum::Player ? tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset() : (tTarget.m_pEntity->m_vecMins() + tTarget.m_pEntity->m_vecMaxs()) / 2; // center for buildings/NPCs
+	m_tInfo.m_vTargetEye = tTarget.m_pEntity->As<CTFPlayer>()->GetViewOffset();
 	m_tInfo.m_flLatency = F::Backtrack.GetReal() + TICKS_TO_TIME(F::Backtrack.GetAnticipatedChoke());
 
 	Vec3 vVelocity = F::ProjSim.GetVelocity();
