@@ -111,6 +111,7 @@ private:
 
 	void SetBounds(CTFPlayer* pPlayer);
 	void RestoreBounds(CTFPlayer* pPlayer);
+    bool DetectLedgeStop(const PlayerStorage& tStorage, float aheadDist = 16.f, float downDist = 28.f) const;
 
 	bool m_bOldInPrediction = false;
 	bool m_bOldFirstTimePredicted = false;
