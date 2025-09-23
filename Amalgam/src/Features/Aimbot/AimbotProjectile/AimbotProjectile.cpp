@@ -1059,10 +1059,10 @@ static inline float GetVerticalBoost(CTFWeaponBase* pWeapon)
     }
 }
 
-void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy)
+void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy, int iArcMode)
 {
-	if (out.m_iCalculated != CalculatedEnum::Pending)
-		return;
+    if (out.m_iCalculated != CalculatedEnum::Pending)
+        return;
 
 	const float flGrav = m_tInfo.m_flGravity * 800.f;
 
@@ -1080,41 +1080,85 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		float flDist = vDelta.Length2D();
 
 		Vec3 vAngleTo = Math::CalcAngle(vLocalPos, vTargetPos);
-		if (!flGrav)
-			flPitch = -DEG2RAD(vAngleTo.x);
-		else
-		{	// arch: low vs high arc selection
-			float flV2 = pow(flVelocity, 2);
-			float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
-			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
-				return;
-			float flSqrt = sqrt(flRoot);
-			float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
-			float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
-			float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
-			float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
-			float flDesired = iSimTime > 0 ? (TICKS_TO_TIME(iSimTime) + m_tInfo.m_flOffsetTime - flDragTime) : std::min(flTimeLow, flTimeHigh);
-			flPitch = fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired) ? flPitchHigh : flPitchLow;
+		        if (!flGrav)
+            flPitch = -DEG2RAD(vAngleTo.x);
+        else
+        {   // compute low/high solutions and select using iArcMode (Auto/Low/High)
+            float flV2 = pow(flVelocity, 2);
+            float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
+            if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
+                return;
+            float flSqrt = sqrt(flRoot);
+            float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
+            float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
+            float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
+            float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
 
-			// refine using one Newton step to account for initial vertical boost on pipes
-			float flVzBoost = GetVerticalBoost(m_tInfo.m_pWeapon);
-			if (flVzBoost)
-			{
-				for (int k = 0; k < 2; k++)
-				{
-					float flCos = cos(flPitch), flSin = sin(flPitch);
-					if (fabsf(flCos) < 1e-3f) break;
-					float flT = flDist / (flCos * flVelocity);
-					float flPredZ = (flVelocity * flSin + flVzBoost) * flT - 0.5f * flGrav * flT * flT;
-					float flErr = flPredZ - vDelta.z;
-					if (fabsf(flErr) < 0.5f) break;
-					float flDTdTheta = flT * tanf(flPitch);
-					float flDEdTheta = flVelocity * flCos * flT + (flVelocity * flSin - flGrav * flT + flVzBoost) * flDTdTheta;
-					if (fabsf(flDEdTheta) < 1e-3f) break;
-					flPitch -= flErr / flDEdTheta;
-				}
-			}
-		}
+            // store diagnostics in degrees where applicable
+            out.m_flPitchLow = -RAD2DEG(flPitchLow) - m_tInfo.m_vAngFix.x;
+            out.m_flPitchHigh = -RAD2DEG(flPitchHigh) - m_tInfo.m_vAngFix.x;
+            out.m_flTimeLow = flTimeLow - m_tInfo.m_flOffsetTime;
+            out.m_flTimeHigh = flTimeHigh - m_tInfo.m_flOffsetTime;
+
+            const bool bHasDesired = iSimTime > 0;
+            float flDesired = bHasDesired ? (TICKS_TO_TIME(iSimTime) + m_tInfo.m_flOffsetTime - flDragTime) : std::min(flTimeLow, flTimeHigh);
+
+            int iChosenArc = ArcModeEnum::Low;
+            if (iArcMode == ArcModeEnum::Low)
+                iChosenArc = ArcModeEnum::Low;
+            else if (iArcMode == ArcModeEnum::High)
+                iChosenArc = ArcModeEnum::High;
+            else
+            {
+                if (bHasDesired)
+                {
+                    iChosenArc = (fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired)) ? ArcModeEnum::High : ArcModeEnum::Low;
+                }
+                else
+                {
+                    // prefer high arc if LOS is blocked, target is well above, or for pipes at medium-far range
+                    bool bHighPreferred = false;
+                    bool bBlocked = false;
+                    if (bAccuracy)
+                    {
+                        CGameTrace trace = {};
+                        CTraceFilterWorldAndPropsOnly filter = {};
+                        SDK::Trace(vLocalPos, vTargetPos, MASK_SHOT, &filter, &trace);
+                        bBlocked = trace.fraction < 1.f;
+                    }
+                    float flSlope = flDist > 1.f ? (vDelta.z / flDist) : (vDelta.z >= 0.f ? 1.f : -1.f);
+                    bool bSignificantlyAbove = flSlope > 0.2f;
+                    bool bPipeish = m_tInfo.m_pWeapon && (
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_GRENADELAUNCHER ||
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER ||
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_CANNON);
+                    bHighPreferred = bBlocked || bSignificantlyAbove || (bPipeish && flDist > 550.f);
+                    iChosenArc = bHighPreferred ? ArcModeEnum::High : ArcModeEnum::Low;
+                }
+            }
+
+            flPitch = (iChosenArc == ArcModeEnum::High) ? flPitchHigh : flPitchLow;
+            out.m_iArcUsed = iChosenArc;
+
+            // refine using Newton steps to account for initial upward boost on pipes/cannon
+            float flVzBoost = GetVerticalBoost(m_tInfo.m_pWeapon);
+            if (flVzBoost)
+            {
+                for (int k = 0; k < 2; k++)
+                {
+                    float flCos = cos(flPitch), flSin = sin(flPitch);
+                    if (fabsf(flCos) < 1e-3f) break;
+                    float flT = flDist / (flCos * flVelocity);
+                    float flPredZ = (flVelocity * flSin + flVzBoost) * flT - 0.5f * flGrav * flT * flT;
+                    float flErr = flPredZ - vDelta.z;
+                    if (fabsf(flErr) < 0.5f) break;
+                    float flDTdTheta = flT * tanf(flPitch);
+                    float flDEdTheta = flVelocity * flCos * flT + (flVelocity * flSin - flGrav * flT + flVzBoost) * flDTdTheta;
+                    if (fabsf(flDEdTheta) < 1e-3f) break;
+                    flPitch -= flErr / flDEdTheta;
+                }
+            }
+        }
 		out.m_flTime = flDist / (cos(flPitch) * flVelocity) - m_tInfo.m_flOffsetTime + flDragTime;
 		out.m_flPitch = flPitch = -RAD2DEG(flPitch) - m_tInfo.m_vAngFix.x;
 		out.m_flYaw = flYaw = vAngleTo.y - m_tInfo.m_vAngFix.y;
@@ -1166,7 +1210,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 	if (out.m_iCalculated = !F::ProjSim.GetInfo(m_tInfo.m_pLocal, m_tInfo.m_pWeapon, { flPitch, flYaw, 0 }, tProjInfo, iFlags) ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 		return;
 
-	{	// calculate trajectory from projectile origin
+	{ 	// calculate trajectory from projectile origin
 		float flVelocity = m_tInfo.m_flVelocity, flDragTime = 0.f;
 		SolveProjectileSpeed(m_tInfo.m_pWeapon, tProjInfo.m_vPos, vTargetPos, flVelocity, flDragTime, m_tInfo.m_flGravity);
 
@@ -1174,22 +1218,49 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		float flDist = vDelta.Length2D();
 
 		Vec3 vAngleTo = Math::CalcAngle(tProjInfo.m_vPos, vTargetPos);
-		if (!flGrav)
-			out.m_flPitch = -DEG2RAD(vAngleTo.x);
-		else
-		{	// arch: low vs high arc selection from projectile origin
-			float flV2 = pow(flVelocity, 2);
-			float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
-			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
-				return;
-			float flSqrt = sqrt(flRoot);
-			float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
-			float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
-			float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
-			float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
-			float flDesired = iSimTime > 0 ? (TICKS_TO_TIME(iSimTime) - flDragTime) : std::min(flTimeLow, flTimeHigh);
-			out.m_flPitch = fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired) ? flPitchHigh : flPitchLow;
-		}
+		        if (!flGrav)
+            out.m_flPitch = -DEG2RAD(vAngleTo.x);
+        else
+        {   // choose from projectile origin using same arc mode
+            float flV2 = pow(flVelocity, 2);
+            float flRoot = flV2 * flV2 - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * flV2);
+            if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
+                return;
+            float flSqrt = sqrt(flRoot);
+            float flPitchLow = atan((flV2 - flSqrt) / (flGrav * flDist));
+            float flPitchHigh = atan((flV2 + flSqrt) / (flGrav * flDist));
+            float flTimeLow = flDist / (cos(flPitchLow) * flVelocity);
+            float flTimeHigh = flDist / (cos(flPitchHigh) * flVelocity);
+            const bool bHasDesired = iSimTime > 0;
+            float flDesired = bHasDesired ? (TICKS_TO_TIME(iSimTime) - flDragTime) : std::min(flTimeLow, flTimeHigh);
+
+            int iChosenArc = ArcModeEnum::Low;
+            if (iArcMode == ArcModeEnum::Low)
+                iChosenArc = ArcModeEnum::Low;
+            else if (iArcMode == ArcModeEnum::High)
+                iChosenArc = ArcModeEnum::High;
+            else
+            {
+                if (bHasDesired)
+                {
+                    iChosenArc = (fabsf(flTimeHigh - flDesired) < fabsf(flTimeLow - flDesired)) ? ArcModeEnum::High : ArcModeEnum::Low;
+                }
+                else
+                {
+                    // reuse quick heuristics from first pass (we don't have vLocalPos here, but yaw/pitch were computed from local)
+                    bool bHighPreferred = false;
+                    float flSlope = flDist > 1.f ? (vDelta.z / flDist) : (vDelta.z >= 0.f ? 1.f : -1.f);
+                    bool bSignificantlyAbove = flSlope > 0.2f;
+                    bool bPipeish = m_tInfo.m_pWeapon && (
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_GRENADELAUNCHER ||
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER ||
+                        m_tInfo.m_pWeapon->GetWeaponID() == TF_WEAPON_CANNON);
+                    bHighPreferred = bSignificantlyAbove || (bPipeish && flDist > 550.f);
+                    iChosenArc = bHighPreferred ? ArcModeEnum::High : ArcModeEnum::Low;
+                }
+            }
+            out.m_flPitch = (iChosenArc == ArcModeEnum::High) ? flPitchHigh : flPitchLow;
+        }
 		out.m_flTime = flDist / (cos(out.m_flPitch) * flVelocity) + flDragTime;
 	}
 

@@ -5,13 +5,19 @@
 
 Enum(PointType, None = 0, Regular = 1 << 0, Obscured = 1 << 1, ObscuredExtra = 1 << 2, ObscuredMulti = 1 << 3)
 Enum(Calculated, Pending, Good, Time, Bad)
+Enum(ArcMode, Auto, Low, High)
 
 struct Solution_t
 {
-	float m_flPitch = 0.f;
-	float m_flYaw = 0.f;
-	float m_flTime = 0.f;
-	int m_iCalculated = CalculatedEnum::Pending;
+    float m_flPitch = 0.f;
+    float m_flYaw = 0.f;
+    float m_flTime = 0.f;
+    int m_iCalculated = CalculatedEnum::Pending;
+    float m_flPitchLow = 0.f;
+    float m_flPitchHigh = 0.f;
+    float m_flTimeLow = 0.f;
+    float m_flTimeHigh = 0.f;
+    int m_iArcUsed = ArcModeEnum::Auto;
 };
 struct Point_t
 {
@@ -54,7 +60,7 @@ private:
 	void SetupSplashPoints(Target_t& tTarget, std::vector<std::pair<Vec3, int>>& vSpherePoints, std::vector<std::pair<Vec3, Vec3>>& vSimplePoints);
 	std::vector<Point_t> GetSplashPointsSimple(Target_t& tTarget, std::vector<std::pair<Vec3, Vec3>>& vSpherePoints, int iSimTime);
 
-	void CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy = true);
+	void CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy = true, int iArcMode = ArcModeEnum::Auto);
 	bool TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Target_t& tTarget, Vec3& vPoint, Vec3& vAngles, int iSimTime, bool bSplash, bool* pHitSolid = nullptr, std::vector<Vec3>* pProjectilePath = nullptr);
 
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon);

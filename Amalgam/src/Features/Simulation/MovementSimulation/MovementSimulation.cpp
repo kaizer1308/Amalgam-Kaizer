@@ -764,6 +764,8 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
         }
 
         if (yawStep)
+        {
+            // Apply raw yaw per tick (no clamping or scaling) for maximum fidelity
             tStorage.m_MoveData.m_vecViewAngles.y += yawStep;
 
         if (!tStorage.m_bDirectMove)
@@ -780,8 +782,6 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 
         DetectLedgeAndClamp(tStorage, yawStep);
     }
-    else if (!tStorage.m_bDirectMove)
-        tStorage.m_MoveData.m_flForwardMove = tStorage.m_MoveData.m_flSideMove = 0.f;
 
     DetectLedgeAndClamp(tStorage, 0.f);
 
