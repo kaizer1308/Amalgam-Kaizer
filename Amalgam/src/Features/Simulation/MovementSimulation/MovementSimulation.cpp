@@ -730,59 +730,71 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 	SetBounds(tStorage.m_pPlayer);
 
 	    if (tStorage.m_flAverageYaw)
-    {
-        float yawStep = 0.f;
-        const bool bCharging = tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE);
-        const bool bSwimming = tStorage.m_pPlayer->IsSwimming();
-        if (!bCharging && !bSwimming)
-        {
-            const bool bCounterStrafe = (Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe);
-            const bool bUseSchedule = bCounterStrafe && (tStorage.m_flCounterStrafeConfidence > 0.3f && tStorage.m_iStrafePeriod > 0 && tStorage.m_flYawAbs > 0.f);
-            if (bUseSchedule)
-            {
-                if (tStorage.m_iYawSign == 0)
-                    tStorage.m_iYawSign = (tStorage.m_flAverageYaw >= 0.f ? +1 : -1);
+	{
+		float yawStep = 0.f;
+		bool bScheduledThisTick = false; 
+		const bool bCharging = tStorage.m_pPlayer->InCond(TF_COND_SHIELD_CHARGE);
+		const bool bSwimming = tStorage.m_pPlayer->IsSwimming();
+		if (!bCharging && !bSwimming)
+		{
+			const bool bCounterStrafe = (Vars::Aimbot::Projectile::StrafePrediction.Value & Vars::Aimbot::Projectile::StrafePredictionEnum::CounterStrafe);
+			const bool bUseSchedule = bCounterStrafe
+				&& (tStorage.m_flCounterStrafeConfidence > 0.6f)
+				&& (tStorage.m_iStrafePeriod > 1)
+				&& (tStorage.m_flYawAbs >= 0.08f)
+				&& (tStorage.m_flAverageYawConfidence > 0.35f);
+			if (bUseSchedule)
+			{
+				if (tStorage.m_iYawSign == 0)
+										tStorage.m_iYawSign = (tStorage.m_flAverageYaw >= 0.f ? +1 : -1);
 
-                yawStep = tStorage.m_flYawAbs * float(tStorage.m_iYawSign);
+				yawStep = tStorage.m_flYawAbs * float(tStorage.m_iYawSign);
+				bScheduledThisTick = true;
 
-                if (tStorage.m_iTicksToFlip > 0)
-                    --tStorage.m_iTicksToFlip;
-                if (tStorage.m_iTicksToFlip == 0)
-                {
-                    tStorage.m_iYawSign = -tStorage.m_iYawSign;
-                    tStorage.m_iTicksToFlip = std::max(1, tStorage.m_iStrafePeriod);
-                }
-            }
-            else
-            {
-                yawStep = tStorage.m_flAverageYaw;
-            }
-        }
-        else
-        {
-            yawStep = tStorage.m_flAverageYaw;
-        }
+				if (tStorage.m_iTicksToFlip > 0)
+					--tStorage.m_iTicksToFlip;
+				if (tStorage.m_iTicksToFlip == 0)
+				{
+					tStorage.m_iYawSign = -tStorage.m_iYawSign;
+					tStorage.m_iTicksToFlip = std::max(1, tStorage.m_iStrafePeriod);
+				}
+			}
+			else
+			{
+				yawStep = tStorage.m_flAverageYaw;
+			}
+		}
+		else
+		{
+			yawStep = tStorage.m_flAverageYaw;
+		}
 
-        if (yawStep)
-        {
-            // Apply raw yaw per tick (no clamping or scaling) for maximum fidelity
-            tStorage.m_MoveData.m_vecViewAngles.y += yawStep;
+		// Suppress tiny or low-confidence yaw to prevent left/right drift on straight movement
+		const float kMinYawApply = 0.06f; // deg/tick (~4 deg/sec)
+		if (fabsf(yawStep) < kMinYawApply || tStorage.m_flAverageYawConfidence < 0.35f)
+			yawStep = 0.f;
 
-        if (!tStorage.m_bDirectMove)
-        {
-            if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
-                tStorage.m_MoveData.m_flSideMove = (yawStep >= 0.f ? 450.f : -450.f);
-        }
+		if (yawStep)
+		{
+			// Apply raw yaw per tick (no clamping or scaling) for maximum fidelity
+			tStorage.m_MoveData.m_vecViewAngles.y += yawStep;
 
-        if (tStorage.m_bDirectMove && tStorage.m_flCounterStrafeConfidence > 0.3f && tStorage.m_iStrafePeriod > 0 && tStorage.m_flYawAbs > 0.f)
-        {
-            if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
-                tStorage.m_MoveData.m_flSideMove = (tStorage.m_iYawSign >= 0 ? 450.f : -450.f);
-        }
+		if (!tStorage.m_bDirectMove)
+		{
+			// Only inject sidemove if actual strafe is happening (avoid bias on linear air movement)
+			if (fabsf(yawStep) >= 0.08f && fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
+				tStorage.m_MoveData.m_flSideMove = (yawStep >= 0.f ? 450.f : -450.f);
+		}
 
-        DetectLedgeAndClamp(tStorage, yawStep);
-    }
-    }
+		if (tStorage.m_bDirectMove && bScheduledThisTick)
+		{
+			if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
+				tStorage.m_MoveData.m_flSideMove = (tStorage.m_iYawSign >= 0 ? 450.f : -450.f);
+		}
+
+			DetectLedgeAndClamp(tStorage, yawStep);
+		}
+	}
 
     DetectLedgeAndClamp(tStorage, 0.f);
 
@@ -859,12 +871,12 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
         return false;
     }
 
-    struct Seg { int sign; int ticks; float avgMag; };
-    std::vector<Seg> segs; segs.reserve(8);
+    	struct Seg { int sign; int ticks; float avgMag; };
+	std::vector<Seg> segs; segs.reserve(8);
 
-    int curSign = 0; int curTicks = 0; float magSum = 0.f; int magCnt = 0;
-    int totalPairs = 0; int totalTicks = 0;
-    const float kMinYawPerTick = 0.05f;
+	int curSign = 0; int curTicks = 0; float magSum = 0.f; int magCnt = 0;
+	int totalPairs = 0; int totalTicks = 0;
+	const float kMinYawPerTick = 0.10f; // ignore micro jitter
 
     for (int i = 1; i < iSamples; ++i)
     {
@@ -882,10 +894,16 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
         float absPerTick = fabsf(perTick);
         int s = (absPerTick >= kMinYawPerTick) ? (perTick >= 0.f ? +1 : -1) : 0;
 
-        if (curSign == 0)
+                if (curSign == 0)
         {
-            curSign = (s == 0 ? +1 : s);
-            curTicks = dt; magSum = absPerTick * dt; magCnt = dt;
+            // Don't start a segment until we have a meaningful sign; accumulate neutral time only
+            if (s == 0)
+            {
+                curTicks += dt;
+                totalPairs++; totalTicks += dt;
+                continue;
+            }
+            curSign = s; curTicks = dt; magSum = absPerTick * dt; magCnt = dt;
         }
         else if (s == 0 || s == curSign)
         {
@@ -900,11 +918,12 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
 
         totalPairs++; totalTicks += dt;
     }
+
     if (curTicks > 0)
         segs.push_back({ curSign, curTicks, magSum / std::max(1, magCnt) });
 
-    if (segs.size() < 2)
-        return false;
+    	if (segs.size() < 3)
+		return false;
 
     int ticksSinceLastFlip = segs[0].ticks;
 
@@ -949,7 +968,7 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
     tStorage.m_iTicksToFlip = ticksToFlip;
     tStorage.m_flCounterStrafeConfidence = conf;
 
-    return conf > 0.25f;
+    	return conf > 0.5f;
 }
 
 void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::function<void(CMoveData&)> fCallback)
