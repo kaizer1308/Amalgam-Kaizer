@@ -782,6 +782,7 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 
         DetectLedgeAndClamp(tStorage, yawStep);
     }
+    }
 
     DetectLedgeAndClamp(tStorage, 0.f);
 
