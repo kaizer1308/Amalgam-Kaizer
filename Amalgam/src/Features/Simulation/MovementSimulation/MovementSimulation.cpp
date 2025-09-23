@@ -2,6 +2,7 @@
 #include "YawAccumulator.h"
 
 #include "../../EnginePrediction/EnginePrediction.h"
+#include <algorithm>
 #include <numeric>
 #include <sstream>
 #include <cmath>
@@ -11,25 +12,83 @@ static CUserCmd s_tDummyCmd = {};
 
 void CMovementSimulation::ComputeYawResidualAndConfidence(const std::deque<MoveData>& recs, int usedTicks, float estYawPerTick, float& outResidualRMS, float& outConfidence) const
 {
-	outResidualRMS = 0.f; outConfidence = 0.f;
-	if (recs.size() < 3 || usedTicks <= 0) return;
-	const float yaw0 = Math::VectorAngles(recs[1].m_vDirection).y;
-	int tickAccum = 0; int pairs = 0; float sumSq = 0.f;
+	outResidualRMS = 0.f;
+	outConfidence = 0.f;
+	if (recs.size() < 3 || usedTicks <= 0)
+		return;
+
+	const float targetTicks = std::max(1.f, static_cast<float>(usedTicks));
+	float tickAccum = 0.f;
+	float consumedSpan = 0.f;
+	float weightSum = 0.f;
+	float weightedSq = 0.f;
+	int deviationPenalty = 0;
+	bool anchorValid = false;
+	float anchorYaw = 0.f;
+	float anchorTick = 0.f;
+
 	for (size_t i = 1; i < recs.size(); ++i)
 	{
-		if (recs[i-1].m_iMode != recs[i].m_iMode) continue;
-		const int dt = std::max(TIME_TO_TICKS(recs[i-1].m_flSimTime - recs[i].m_flSimTime), 1);
-		tickAccum += dt; if (tickAccum > usedTicks) break;
-		const float yawObs = Math::VectorAngles(recs[i].m_vDirection).y;
-	float yawPred = Math::NormalizeAngle(yaw0 + estYawPerTick * tickAccum);
-	float diff = Math::NormalizeAngle(yawObs - yawPred);
-		sumSq += diff * diff; pairs++;
+		const auto& newer = recs[i - 1];
+		const auto& older = recs[i];
+		if (newer.m_iMode != older.m_iMode)
+			continue;
+
+		float simDelta = std::max(newer.m_flSimTime - older.m_flSimTime, TICK_INTERVAL);
+		float span = std::max(simDelta / TICK_INTERVAL, 1.f);
+
+		float prevAccum = tickAccum;
+		tickAccum += span;
+
+		float cappedAccum = std::min(tickAccum, targetTicks);
+		float effectiveSpan = cappedAccum - std::min(prevAccum, targetTicks);
+		if (effectiveSpan <= 0.f)
+		{
+			if (tickAccum >= targetTicks)
+				break;
+			continue;
+		}
+
+		if (!anchorValid)
+		{
+			anchorYaw = Math::VectorAngles(older.m_vDirection).y;
+			anchorTick = prevAccum;
+			anchorValid = true;
+		}
+
+		const float yawObs = Math::VectorAngles(newer.m_vDirection).y;
+		float yawPred = Math::NormalizeAngle(anchorYaw + estYawPerTick * (prevAccum + effectiveSpan - anchorTick));
+		float diff = Math::NormalizeAngle(yawObs - yawPred);
+
+		const Vec3 avgVel = (newer.m_vVelocity + older.m_vVelocity) * 0.5f;
+		const float speed = avgVel.Length2D();
+		const float baseRef = (newer.m_iMode == 1 ? 260.f : 320.f);
+		float speedScale = baseRef > 1.f ? std::clamp(speed / baseRef, 0.f, 1.5f) : 1.f;
+
+		float weight = effectiveSpan * (0.35f + 0.65f * speedScale);
+		if (!std::isfinite(weight))
+			weight = effectiveSpan;
+
+		weightedSq += diff * diff * weight;
+		weightSum += weight;
+		consumedSpan += effectiveSpan;
+
+		if (fabsf(diff) > 25.f)
+			++deviationPenalty;
+
+		if (tickAccum >= targetTicks)
+			break;
 	}
-	if (pairs > 0)
-	{
-		outResidualRMS = sqrtf(sumSq / pairs);
-		outConfidence = std::clamp(1.f - (outResidualRMS / 15.f), 0.f, 1.f);
-	}
+
+	if (weightSum <= 0.f || consumedSpan <= 0.f || !anchorValid)
+		return;
+
+	outResidualRMS = sqrtf(weightedSq / weightSum);
+
+	const float coverage = std::clamp(consumedSpan / targetTicks, 0.f, 1.f);
+	const float baseConf = std::clamp(1.f - (outResidualRMS / 12.f), 0.f, 1.f);
+	const float penaltyFactor = 1.f / (1.f + 0.4f * static_cast<float>(deviationPenalty));
+	outConfidence = std::clamp(baseConf * (0.65f + 0.35f * coverage) * penaltyFactor, 0.f, 1.f);
 }
 
 int CMovementSimulation::ComputeStabilityScore(const std::deque<MoveData>& recs, int window) const
@@ -49,7 +108,7 @@ int CMovementSimulation::ComputeStabilityScore(const std::deque<MoveData>& recs,
 	}
 
 	float mean = std::accumulate(speeds.begin(), speeds.end(), 0.f) / speeds.size();
-	    float var = 0.f; for (float s : speeds) { float d = s - mean; var += d * d; }
+    float var = 0.f; for (float s : speeds) { float d = s - mean; var += d * d; }
     var /= std::max<size_t>(1, speeds.size());
     int score = (int)std::round(jerkSum * 0.25f + var * 0.002f);
     return std::max(0, score);
@@ -73,18 +132,23 @@ float CMovementSimulation::EstimateCurvatureYawPerTick(const std::deque<MoveData
 	}
 	if ((int)pts.size() < 3) return 0.f;
 
+	std::reverse(pts.begin(), pts.end());
+	std::reverse(idx.begin(), idx.end());
+
 	// compute total ticks and distance across the selected contiguous window
-	float totalTicks = 0.f; float dist = 0.f;
+	float totalSpan = 0.f; float dist = 0.f;
 	for (size_t k = 1; k < idx.size(); ++k)
 	{
-		int iPrev = idx[k - 1];
-		int iCur = idx[k];
-		int dt = std::max(TIME_TO_TICKS(recs[iPrev].m_flSimTime - recs[iCur].m_flSimTime), 1);
-		totalTicks += dt;
-		dist += (pts[k - 1] - pts[k]).Length2D();
+		int idxOlder = idx[k - 1];
+		int idxNewer = idx[k];
+		float simOlder = recs[idxOlder].m_flSimTime;
+		float simNewer = recs[idxNewer].m_flSimTime;
+		float span = std::max(std::fabs(simNewer - simOlder) / TICK_INTERVAL, 1.f);
+		totalSpan += span;
+		dist += (pts[k] - pts[k - 1]).Length2D();
 	}
-	if (totalTicks <= 0.f || dist <= 0.f) return 0.f;
-	outUsedTicks = (int)totalTicks;
+	if (totalSpan <= 0.f || dist <= 0.f) return 0.f;
+	outUsedTicks = std::max(1, (int)std::round(totalSpan));
 
 	double mx = 0.0, my = 0.0;
 	for (const auto& p : pts) { mx += p.x; my += p.y; }
@@ -109,7 +173,7 @@ float CMovementSimulation::EstimateCurvatureYawPerTick(const std::deque<MoveData
 	float R = sqrtf((float)R2);
 	if (R < 1.f) return 0.f;
 
-	// ggregate cross products over segments (newest -> older order)
+	// aggregate cross products over segments (chronological order)
 	double crossSum = 0.0;
 	for (size_t k = 0; k + 2 < pts.size(); ++k)
 	{
@@ -120,7 +184,7 @@ float CMovementSimulation::EstimateCurvatureYawPerTick(const std::deque<MoveData
 	float signDir = crossSum >= 0.0 ? 1.f : -1.f;
 
 	// mean speed over the window and corresponding yaw rate
-	float v = dist / (totalTicks * TICK_INTERVAL);
+	float v = dist / (totalSpan * TICK_INTERVAL);
 	constexpr float kPi = 3.14159265358979323846f;
 	float yawPerSec = (v / R) * signDir * 180.f / kPi; // deg/sec
 	float yawPerTick = yawPerSec * TICK_INTERVAL;
@@ -186,11 +250,36 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 	}
 
 	float avgYaw = acc.Finalize(dynamicMin, dynamicMin); // we pass same value for minTicks & dynamicMin for simplicity
-	if (!avgYaw) return;
+	if (!avgYaw)
+	{
+		if (Vars::Debug::Logging.Value)
+		{
+			std::ostringstream oss;
+			oss << "flAverageYaw(det) rejected span=" << acc.AccumulatedTickSpan()
+				<< " w=" << acc.WeightedSamples() << " min=" << dynamicMin;
+			SDK::Output("MovementSimulation", oss.str().c_str(), { 140, 100, 120 }, Vars::Debug::Logging.Value);
+		}
+		return;
+	}
+
+	const float sampleWeight = acc.WeightedSamples();
+	const float tickSpan = acc.AccumulatedTickSpan();
+	const int changeCount = acc.ChangeCount();
+	const int clampEvents = acc.ClampEvents();
+	const int lowAmpEvents = acc.LowAmplitudeEvents();
+	float coverageFactor = 0.f;
+	if (tickSpan > 0.f)
+		coverageFactor = std::clamp(tickSpan / std::max(1.f, float(dynamicMin)), 0.f, 1.5f);
+	float changePenalty = 1.f;
+	if (changeCount > 1)
+		changePenalty = std::clamp(1.f - 0.08f * float(changeCount - 1), 0.6f, 1.f);
+	float clampPenalty = std::clamp(1.f - 0.05f * float(clampEvents), 0.6f, 1.f);
+	float lowAmpPenalty = std::clamp(1.f - 0.02f * float(lowAmpEvents), 0.7f, 1.f);
 
 	// if curvature fit is enabled, estimate and pick lower residual
 	float chosenYaw = avgYaw; float conf = 0.f; float residual = 0.f;
-	ComputeYawResidualAndConfidence(vRecords, dynamicMin, avgYaw, residual, conf);
+	int evalTicks = std::clamp(static_cast<int>(std::round(tickSpan)), dynamicMin / 2, dynamicMin);
+	ComputeYawResidualAndConfidence(vRecords, std::max(evalTicks, 1), avgYaw, residual, conf);
 	float bestResidual = residual; float bestConf = conf;
 	if (Vars::Aimbot::Projectile::UseCurvatureFit.Value)
 	{
@@ -206,10 +295,32 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 		}
 	}
 
+	if (tickSpan <= 0.f || sampleWeight <= 0.f)
+		bestConf = 0.f;
+	else
+	{
+		bestConf *= (0.65f + 0.35f * coverageFactor);
+		bestConf *= changePenalty;
+		bestConf *= clampPenalty;
+		bestConf *= lowAmpPenalty;
+		bestConf = std::clamp(bestConf, 0.f, 1.f);
+	}
+
 	tStorage.m_flAverageYaw = chosenYaw;
 	tStorage.m_flAverageYawConfidence = bestConf;
 	{
-		std::ostringstream oss; oss << "flAverageYaw(det) " << chosenYaw << " ticks=" << acc.AccumulatedTicks() << " min=" << dynamicMin << (pPlayer->entindex() == I::EngineClient->GetLocalPlayer() ? " (local)" : "");
+		std::ostringstream oss;
+		oss << "flAverageYaw(det) " << chosenYaw
+			<< " ticks=" << acc.AccumulatedTicks()
+			<< " span=" << tickSpan
+			<< " min=" << dynamicMin
+			<< " cov=" << coverageFactor
+			<< " flips=" << changeCount
+			<< " clamp=" << clampEvents
+			<< " low=" << lowAmpEvents
+			<< " conf=" << bestConf;
+		if (pPlayer->entindex() == I::EngineClient->GetLocalPlayer())
+			oss << " (local)";
 		SDK::Output("MovementSimulation", oss.str().c_str(), { 100, 200, 150 }, Vars::Debug::Logging.Value);
 	}
 }
@@ -230,9 +341,28 @@ void CMovementSimulation::Store()
 			continue;
 
 		bool bLocal = pPlayer->entindex() == I::EngineClient->GetLocalPlayer() && !I::EngineClient->IsPlayingDemo();
-		Vec3 vVelocity = bLocal ? F::EnginePrediction.m_vVelocity : pPlayer->m_vecVelocity();
+		Vec3 vPredVelocity = bLocal ? F::EnginePrediction.m_vVelocity : pPlayer->m_vecVelocity();
+		Vec3 vServerVelocity = pPlayer->m_vecVelocity();
+		Vec3 vVelocity = vPredVelocity;
 		Vec3 vOrigin = bLocal ? F::EnginePrediction.m_vOrigin : pPlayer->m_vecOrigin();
-		Vec3 vDirection = bLocal ? Math::RotatePoint(F::EnginePrediction.m_vDirection, {}, { 0, F::EnginePrediction.m_vAngles.y, 0 }) : vVelocity.To2D();
+		Vec3 vDirection = vVelocity.To2D();
+		if (bLocal)
+		{
+			Vec3 predictedDir = Math::RotatePoint(F::EnginePrediction.m_vDirection, {}, { 0, F::EnginePrediction.m_vAngles.y, 0 });
+			if (!predictedDir.To2D().IsZero())
+				vDirection = predictedDir;
+		}
+		else if (!vServerVelocity.To2D().IsZero())
+		{
+			float serverSpeed = vServerVelocity.Length2D();
+			float predSpeed = vPredVelocity.Length2D();
+			if (serverSpeed > 1.f && predSpeed > 1.f)
+			{
+				float blend = std::clamp(serverSpeed / std::max(predSpeed, 1.f), 0.2f, 1.8f);
+				vVelocity = vPredVelocity * 0.5f + vServerVelocity * 0.5f * blend;
+				vDirection = vVelocity.To2D();
+			}
+		}
 
 		MoveData* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
 		vRecords.emplace_front(
@@ -871,104 +1001,186 @@ bool CMovementSimulation::CounterStrafePrediction(PlayerStorage& tStorage, int i
         return false;
     }
 
-    	struct Seg { int sign; int ticks; float avgMag; };
-	std::vector<Seg> segs; segs.reserve(8);
+    	struct Seg
+	{
+		int   sign;
+		float span;
+		float magAvg;
+		float weight;
+		float speedAvg;
+	};
+	std::vector<Seg> segs;
+	segs.reserve(8);
 
-	int curSign = 0; int curTicks = 0; float magSum = 0.f; int magCnt = 0;
-	int totalPairs = 0; int totalTicks = 0;
-	const float kMinYawPerTick = 0.10f; // ignore micro jitter
+	int curSign = 0;
+	float curSpan = 0.f;
+	float magWeighted = 0.f;
+	float magWeight = 0.f;
+	float speedWeighted = 0.f;
+	const float kMinYawPerTick = 0.085f; // ignore micro jitter but stay sensitive
+	float idleSpan = 0.f;
+	float zeroFillSpan = 0.f;
+	float totalSpan = 0.f;
 
-    for (int i = 1; i < iSamples; ++i)
-    {
-        const auto& newer = recs[i - 1];
-        const auto& older = recs[i];
-        if (newer.m_iMode != older.m_iMode || newer.m_iMode != targetMode)
-        {
-            break;
-        }
-        int dt = std::max(TIME_TO_TICKS(newer.m_flSimTime - older.m_flSimTime), 1);
-        float yaw1 = Math::VectorAngles(newer.m_vDirection).y;
-        float yaw2 = Math::VectorAngles(older.m_vDirection).y;
-        float dyaw = Math::NormalizeAngle(yaw1 - yaw2);
-        float perTick = dyaw / dt;
-        float absPerTick = fabsf(perTick);
-        int s = (absPerTick >= kMinYawPerTick) ? (perTick >= 0.f ? +1 : -1) : 0;
+	for (int i = 1; i < iSamples; ++i)
+	{
+		const auto& newer = recs[i - 1];
+		const auto& older = recs[i];
+		if (newer.m_iMode != older.m_iMode || newer.m_iMode != targetMode)
+		{
+			break;
+		}
 
-                if (curSign == 0)
-        {
-            // Don't start a segment until we have a meaningful sign; accumulate neutral time only
-            if (s == 0)
-            {
-                curTicks += dt;
-                totalPairs++; totalTicks += dt;
-                continue;
-            }
-            curSign = s; curTicks = dt; magSum = absPerTick * dt; magCnt = dt;
-        }
-        else if (s == 0 || s == curSign)
-        {
-            curTicks += dt; magSum += absPerTick * dt; magCnt += dt;
-        }
-        else
-        {
-            if (curTicks > 0)
-                segs.push_back({ curSign, curTicks, magSum / std::max(1, magCnt) });
-            curSign = s; curTicks = dt; magSum = absPerTick * dt; magCnt = dt;
-        }
+		float simDelta = std::max(newer.m_flSimTime - older.m_flSimTime, TICK_INTERVAL);
+		float span = std::max(simDelta / TICK_INTERVAL, 1.f);
+		totalSpan += span;
 
-        totalPairs++; totalTicks += dt;
-    }
+		float yaw1 = Math::VectorAngles(newer.m_vDirection).y;
+		float yaw2 = Math::VectorAngles(older.m_vDirection).y;
+		float dyaw = Math::NormalizeAngle(yaw1 - yaw2);
+		float perTick = dyaw / span;
+		float absPerTick = fabsf(perTick);
+		int s = (absPerTick >= kMinYawPerTick) ? (perTick >= 0.f ? +1 : -1) : 0;
 
-    if (curTicks > 0)
-        segs.push_back({ curSign, curTicks, magSum / std::max(1, magCnt) });
+		const Vec3 avgVel = (newer.m_vVelocity + older.m_vVelocity) * 0.5f;
+		float speed = avgVel.Length2D();
 
-    	if (segs.size() < 3)
+		if (curSign == 0)
+		{
+			if (s == 0)
+			{
+				idleSpan += span;
+				continue;
+			}
+			curSign = s;
+			curSpan = span;
+			magWeighted = absPerTick * span;
+			magWeight = span;
+			speedWeighted = speed * span;
+			continue;
+		}
+
+		if (s == 0)
+		{
+			curSpan += span;
+			magWeight += span;
+			speedWeighted += speed * span;
+			zeroFillSpan += span;
+			continue;
+		}
+
+		if (s == curSign)
+		{
+			curSpan += span;
+			magWeighted += absPerTick * span;
+			magWeight += span;
+			speedWeighted += speed * span;
+			continue;
+		}
+
+		if (curSpan > 0.f)
+		{
+			float avgMag = magWeight > 1e-4f ? (magWeighted / magWeight) : 0.f;
+			float avgSpeed = magWeight > 1e-4f ? (speedWeighted / magWeight) : 0.f;
+			segs.push_back({ curSign, curSpan, avgMag, magWeight, avgSpeed });
+		}
+		curSign = s;
+		curSpan = span;
+		magWeighted = absPerTick * span;
+		magWeight = span;
+		speedWeighted = speed * span;
+	}
+
+	if (curSign != 0 && curSpan > 0.f)
+	{
+		float avgMag = magWeight > 1e-4f ? (magWeighted / magWeight) : 0.f;
+		float avgSpeed = magWeight > 1e-4f ? (speedWeighted / magWeight) : 0.f;
+		segs.push_back({ curSign, curSpan, avgMag, magWeight, avgSpeed });
+	}
+
+	if (segs.size() < 3)
 		return false;
 
-    int ticksSinceLastFlip = segs[0].ticks;
+	float recentSpan = segs[0].span;
 
-    int useCount = std::min<int>((int)segs.size() - 1, 4);
-    if (useCount <= 0)
-        return false;
+	int useCount = std::min<int>((int)segs.size() - 1, 5);
+	if (useCount <= 0)
+		return false;
 
-    float sumTicks = 0.f, sumTicks2 = 0.f; float sumMag = 0.f, sumMag2 = 0.f;
-    for (int k = 1; k <= useCount; ++k)
-    {
-        sumTicks += (float)segs[k].ticks; sumTicks2 += float(segs[k].ticks) * float(segs[k].ticks);
-        sumMag += segs[k].avgMag; sumMag2 += segs[k].avgMag * segs[k].avgMag;
-    }
-    float avgTicks = sumTicks / useCount;
-    float varTicks = std::max(0.f, (sumTicks2 / useCount) - (avgTicks * avgTicks));
-    float sdTicks = sqrtf(varTicks);
+	float sumSpan = 0.f, sumSpan2 = 0.f;
+	float sumMag = 0.f, sumMag2 = 0.f, sumMagWeight = 0.f;
+	float sumSpeed = 0.f, sumSpeed2 = 0.f, sumSpeedWeight = 0.f;
+	for (int k = 1; k <= useCount; ++k)
+	{
+		const auto& seg = segs[k];
+		sumSpan += seg.span;
+		sumSpan2 += seg.span * seg.span;
+		sumMag += seg.magAvg * seg.weight;
+		sumMag2 += seg.magAvg * seg.magAvg * seg.weight;
+		sumMagWeight += seg.weight;
+		sumSpeed += seg.speedAvg * seg.weight;
+		sumSpeed2 += seg.speedAvg * seg.speedAvg * seg.weight;
+		sumSpeedWeight += seg.weight;
+	}
 
-    float avgMag = sumMag / useCount;
-    float varMag = std::max(0.f, (sumMag2 / useCount) - (avgMag * avgMag));
-    float sdMag = sqrtf(varMag);
+	float avgSpan = sumSpan / useCount;
+	float varSpan = std::max(0.f, (sumSpan2 / useCount) - (avgSpan * avgSpan));
+	float sdSpan = sqrtf(varSpan);
 
-    int period = std::clamp((int)std::round(avgTicks), 2, 32);
-    int ticksToFlip = std::clamp(period - ticksSinceLastFlip, 1, 32);
+	float avgMag = sumMagWeight > 1e-4f ? (sumMag / sumMagWeight) : 0.f;
+	float varMag = sumMagWeight > 1e-4f ? std::max(0.f, (sumMag2 / sumMagWeight) - (avgMag * avgMag)) : 0.f;
+	float sdMag = sqrtf(varMag);
 
-    float cDur = 1.f - std::clamp(sdTicks / std::max(1.f, avgTicks), 0.f, 1.f);
-    float cMag = 1.f - std::clamp(sdMag / std::max(0.1f, avgMag), 0.f, 1.f);
-    float cSegs = std::clamp(useCount / 4.f, 0.f, 1.f);
-    float speedFrac = 0.f;
-    if (tStorage.m_MoveData.m_flMaxSpeed > 1.f)
-        speedFrac = std::clamp(tStorage.m_MoveData.m_vecVelocity.Length2D() / tStorage.m_MoveData.m_flMaxSpeed, 0.f, 1.f);
-    float conf = std::clamp(0.5f * cDur + 0.3f * cMag + 0.2f * cSegs, 0.f, 1.f);
-    conf *= (0.8f + 0.4f * speedFrac);
-    conf = std::clamp(conf, 0.f, 1.f);
+	float avgSpeed = sumSpeedWeight > 1e-4f ? (sumSpeed / sumSpeedWeight) : 0.f;
+	float varSpeed = sumSpeedWeight > 1e-4f ? std::max(0.f, (sumSpeed2 / sumSpeedWeight) - (avgSpeed * avgSpeed)) : 0.f;
+	float sdSpeed = sqrtf(varSpeed);
 
-    tStorage.m_flYawAbs = std::clamp(avgMag, 0.f, 10.f);
-    if (tStorage.m_flYawAbs <= 0.01f)
-        tStorage.m_flYawAbs = fabsf(tStorage.m_flAverageYaw);
-    tStorage.m_iYawSign = segs[0].sign;
-    if (tStorage.m_iYawSign == 0)
-        tStorage.m_iYawSign = (tStorage.m_flAverageYaw >= 0.f ? +1 : -1);
-    tStorage.m_iStrafePeriod = period;
-    tStorage.m_iTicksToFlip = ticksToFlip;
-    tStorage.m_flCounterStrafeConfidence = conf;
+	float periodSpan = std::clamp(avgSpan, 2.f, 48.f);
+	int period = std::clamp((int)std::round(periodSpan), 2, 32);
+	float remainingSpan = std::max(periodSpan - recentSpan, 0.5f);
+	int ticksToFlip = std::clamp((int)std::round(remainingSpan), 1, 32);
 
-    	return conf > 0.5f;
+	float fillRatio = 1.f - std::clamp(zeroFillSpan / std::max(totalSpan, 1.f), 0.f, 1.f);
+	float idleRatio = 1.f - std::clamp(idleSpan / std::max(totalSpan, 1.f), 0.f, 1.f);
+	float speedFrac = 0.f;
+	if (tStorage.m_MoveData.m_flMaxSpeed > 1.f)
+		speedFrac = std::clamp(avgSpeed / tStorage.m_MoveData.m_flMaxSpeed, 0.f, 1.3f);
+
+	float cDur = 1.f - std::clamp(sdSpan / std::max(avgSpan, 1.f), 0.f, 1.f);
+	float cMag = 1.f - std::clamp(sdMag / std::max(avgMag, 0.05f), 0.f, 1.f);
+	float cSpeed = 1.f - std::clamp(sdSpeed / std::max(avgSpeed, 1.f), 0.f, 1.f);
+	float cFill = fillRatio;
+	float cIdle = idleRatio;
+	float baseConf = 0.32f * cDur + 0.24f * cMag + 0.16f * cSpeed + 0.16f * cFill + 0.12f * cIdle;
+	baseConf *= std::clamp(0.7f + 0.3f * tStorage.m_flAverageYawConfidence, 0.55f, 1.1f);
+	if (avgMag < 0.06f)
+		baseConf *= std::clamp(avgMag / 0.06f, 0.f, 1.f);
+	baseConf *= std::clamp(0.65f + 0.35f * speedFrac, 0.6f, 1.2f);
+	baseConf = std::clamp(baseConf, 0.f, 1.f);
+
+	float yawAbsCandidate = segs[0].magAvg > 1e-4f ? segs[0].magAvg : avgMag;
+	yawAbsCandidate = std::max(yawAbsCandidate, fabsf(tStorage.m_flAverageYaw));
+	yawAbsCandidate = std::clamp(yawAbsCandidate, 0.f, 12.f);
+	tStorage.m_flYawAbs = yawAbsCandidate;
+	int yawSign = segs[0].sign != 0 ? segs[0].sign : (tStorage.m_flAverageYaw >= 0.f ? +1 : -1);
+	tStorage.m_iYawSign = yawSign;
+	tStorage.m_iStrafePeriod = period;
+	tStorage.m_iTicksToFlip = ticksToFlip;
+	tStorage.m_flCounterStrafeConfidence = baseConf;
+
+	if (Vars::Debug::Logging.Value)
+	{
+		std::ostringstream oss;
+		oss << "CounterStrafe period=" << periodSpan
+			<< " recent=" << recentSpan
+			<< " avgMag=" << avgMag
+			<< " fill=" << (1.f - fillRatio)
+			<< " idle=" << (1.f - idleRatio)
+			<< " conf=" << baseConf;
+		SDK::Output("MovementSimulation", oss.str().c_str(), { 120, 170, 220 }, Vars::Debug::Logging.Value);
+	}
+
+	return baseConf > 0.5f;
 }
 
 void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::function<void(CMoveData&)> fCallback)
