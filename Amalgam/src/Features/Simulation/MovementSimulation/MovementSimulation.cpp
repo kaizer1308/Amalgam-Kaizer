@@ -197,12 +197,19 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 	auto& vRecords = m_mRecords[pPlayer->entindex()];
 	if (vRecords.empty()) return;
 
-	bool bGroundInitial = tStorage.m_bDirectMove;
 	float flMaxSpeed = SDK::MaxSpeed(tStorage.m_pPlayer, false, true);
-	float flLowMinDist = bGroundInitial ? Vars::Aimbot::Projectile::GroundLowMinimumDistance.Value : Vars::Aimbot::Projectile::AirLowMinimumDistance.Value;
-	float flLowMinSamples = bGroundInitial ? Vars::Aimbot::Projectile::GroundLowMinimumSamples.Value : Vars::Aimbot::Projectile::AirLowMinimumSamples.Value;
-	float flHighMinDist = bGroundInitial ? Vars::Aimbot::Projectile::GroundHighMinimumDistance.Value : Vars::Aimbot::Projectile::AirHighMinimumDistance.Value;
-	float flHighMinSamples = bGroundInitial ? Vars::Aimbot::Projectile::GroundHighMinimumSamples.Value : Vars::Aimbot::Projectile::AirHighMinimumSamples.Value;
+
+	const float groundLowMinDist = Vars::Aimbot::Projectile::GroundLowMinimumDistance.Value;
+	const int groundLowMinSamples = Vars::Aimbot::Projectile::GroundLowMinimumSamples.Value;
+	const float groundHighMinDist = Vars::Aimbot::Projectile::GroundHighMinimumDistance.Value;
+	const int groundHighMinSamples = Vars::Aimbot::Projectile::GroundHighMinimumSamples.Value;
+
+	const float airLowMinDist = Vars::Aimbot::Projectile::AirLowMinimumDistance.Value;
+	const int airLowMinSamples = Vars::Aimbot::Projectile::AirLowMinimumSamples.Value;
+	const float airHighMinDist = Vars::Aimbot::Projectile::AirHighMinimumDistance.Value;
+	const int airHighMinSamples = Vars::Aimbot::Projectile::AirHighMinimumSamples.Value;
+
+	bool bGroundInitial = tStorage.m_bDirectMove;
 
 	iSamples = std::min(iSamples, int(vRecords.size()));
 	if (iSamples < 2) return;
@@ -210,36 +217,88 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 	int modeSkips = 0;
 	YawAccumulator acc;
 	bool accConfigured = false;
+	bool modeLocked = false;
+	bool targetGround = bGroundInitial;
+	float spanGroundTicks = 0.f;
+	float spanAirTicks = 0.f;
+	int segGround = 0;
+	int segAir = 0;
 	size_t i = 1; for (; i < (size_t)iSamples; ++i)
 	{
 		auto& newer = vRecords[i - 1];
 		auto& older = vRecords[i];
-		if (newer.m_iMode != older.m_iMode) { modeSkips++; continue; }
-	// static inline bool GetYawDifference(MoveData& tRecord1, MoveData& tRecord2, bool bStart, float* pYaw, float flStraightFuzzyValue, int iMaxChanges = 0, int iMaxChangeTime = 0, float flMaxSpeed = 0.f)
+		if (newer.m_iMode != older.m_iMode)
+		{
+			modeSkips++;
+			continue;
+		}
+		// static inline bool GetYawDifference(MoveData& tRecord1, MoveData& tRecord2, bool bStart, float* pYaw, float flStraightFuzzyValue, int iMaxChanges = 0, int iMaxChangeTime = 0, float flMaxSpeed = 0.f)
 		bool bGround = newer.m_iMode != 1;
 		float straightFuzzy = bGround ? Vars::Aimbot::Projectile::GroundStraightFuzzyValue.Value : Vars::Aimbot::Projectile::AirStraightFuzzyValue.Value;
 		int maxChanges = bGround ? Vars::Aimbot::Projectile::GroundMaxChanges.Value : Vars::Aimbot::Projectile::AirMaxChanges.Value;
 		int maxChangeTime = bGround ? Vars::Aimbot::Projectile::GroundMaxChangeTime.Value : Vars::Aimbot::Projectile::AirMaxChangeTime.Value;
+		if (!modeLocked)
+		{
+			targetGround = bGround;
+			modeLocked = true;
+		}
+		else if (targetGround != bGround)
+		{
+			break;
+		}
 		if (!accConfigured)
 		{
 			acc.Begin(straightFuzzy, maxChanges, maxChangeTime, flMaxSpeed);
 			accConfigured = true;
 		}
+
+		float simDelta = std::max(newer.m_flSimTime - older.m_flSimTime, TICK_INTERVAL);
+		float segTicks = std::max(simDelta / TICK_INTERVAL, 1.f);
+		if (bGround)
+		{
+			spanGroundTicks += segTicks;
+			++segGround;
+		}
+		else
+		{
+			spanAirTicks += segTicks;
+			++segAir;
+		}
+
 		if (!acc.Step(newer, older))
 			break;
 	}
 
-	int minStrafes = 4 + (int)(Vars::Aimbot::Projectile::GroundMaxChanges.Value); // approximate legacy req
-	if (i <= size_t(minStrafes + modeSkips)) return; // insufficient valid samples
+	if (!modeLocked || !accConfigured)
+		return;
 
-	int dynamicMin = flLowMinSamples;
+	const bool usingGround = targetGround;
+	const int processedSegments = usingGround ? segGround : segAir;
+	const float processedSpan = usingGround ? spanGroundTicks : spanAirTicks;
+
+	const int minStrafesGround = 4 + Vars::Aimbot::Projectile::GroundMaxChanges.Value;
+	const int minStrafesAir = 2 + std::max(1, Vars::Aimbot::Projectile::AirMaxChanges.Value);
+	const int requiredStrafes = usingGround ? minStrafesGround : minStrafesAir;
+
+	if (processedSegments < requiredStrafes)
+		return;
+
+	int modeLowMinSamples = usingGround ? groundLowMinSamples : airLowMinSamples;
+	int modeHighMinSamples = usingGround ? groundHighMinSamples : airHighMinSamples;
+	float modeLowMinDist = usingGround ? groundLowMinDist : airLowMinDist;
+	float modeHighMinDist = usingGround ? groundHighMinDist : airHighMinDist;
+
+	int dynamicMin = modeLowMinSamples;
 	if (pPlayer->entindex() != I::EngineClient->GetLocalPlayer())
 	{
 		float flDistance = 0.f;
 		if (auto pLocal = H::Entities.GetLocal())
 			flDistance = pLocal->m_vecOrigin().DistTo(tStorage.m_pPlayer->m_vecOrigin());
-		dynamicMin = flDistance < flLowMinDist ? flLowMinSamples : (int)Math::RemapVal(flDistance, flLowMinDist, flHighMinDist, flLowMinSamples + 1, flHighMinSamples);
+		dynamicMin = static_cast<int>(std::round(Math::RemapVal(flDistance, modeLowMinDist, modeHighMinDist, float(modeLowMinSamples), float(modeHighMinSamples))));
 	}
+	dynamicMin = std::clamp(dynamicMin, modeLowMinSamples, modeHighMinSamples);
+	dynamicMin = std::max(dynamicMin, requiredStrafes);
+	dynamicMin = std::min(iSamples, dynamicMin);
 
 	int stabilityScore = ComputeStabilityScore(vRecords, std::min(iSamples, 12));
 	tStorage.m_flStability = (float)stabilityScore;
@@ -248,8 +307,15 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 		int stability = stabilityScore;
 		dynamicMin = std::min(iSamples, dynamicMin + std::min(stability, 8));
 	}
+	dynamicMin = std::max(dynamicMin, requiredStrafes);
+	dynamicMin = std::min(iSamples, dynamicMin);
 
-	float avgYaw = acc.Finalize(dynamicMin, dynamicMin); // we pass same value for minTicks & dynamicMin for simplicity
+	int minTickRequirement = std::max(modeLowMinSamples, requiredStrafes);
+	int spanRequirement = std::max(minTickRequirement, dynamicMin);
+	int processedSpanInt = static_cast<int>(std::round(processedSpan));
+	spanRequirement = std::max(spanRequirement, processedSpanInt);
+
+	float avgYaw = acc.Finalize(minTickRequirement, spanRequirement);
 	if (!avgYaw)
 	{
 		if (Vars::Debug::Logging.Value)
@@ -269,7 +335,11 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 	const int lowAmpEvents = acc.LowAmplitudeEvents();
 	float coverageFactor = 0.f;
 	if (tickSpan > 0.f)
-		coverageFactor = std::clamp(tickSpan / std::max(1.f, float(dynamicMin)), 0.f, 1.5f);
+	{
+		float effectiveSpan = processedSpan > 0.f ? processedSpan : tickSpan;
+		float coverageDenom = std::max(1.f, float(spanRequirement));
+		coverageFactor = std::clamp(effectiveSpan / coverageDenom, 0.f, 1.5f);
+	}
 	float changePenalty = 1.f;
 	if (changeCount > 1)
 		changePenalty = std::clamp(1.f - 0.08f * float(changeCount - 1), 0.6f, 1.f);
@@ -278,7 +348,7 @@ void CMovementSimulation::GetAverageYaw(PlayerStorage& tStorage, int iSamples)
 
 	// if curvature fit is enabled, estimate and pick lower residual
 	float chosenYaw = avgYaw; float conf = 0.f; float residual = 0.f;
-	int evalTicks = std::clamp(static_cast<int>(std::round(tickSpan)), dynamicMin / 2, dynamicMin);
+	int evalTicks = std::clamp(static_cast<int>(std::round(tickSpan)), spanRequirement / 2, spanRequirement);
 	ComputeYawResidualAndConfidence(vRecords, std::max(evalTicks, 1), avgYaw, residual, conf);
 	float bestResidual = residual; float bestConf = conf;
 	if (Vars::Aimbot::Projectile::UseCurvatureFit.Value)
@@ -909,18 +979,55 @@ void CMovementSimulation::RunTick(PlayerStorage& tStorage, bool bPath, std::func
 			// Apply raw yaw per tick (no clamping or scaling) for maximum fidelity
 			tStorage.m_MoveData.m_vecViewAngles.y += yawStep;
 
-		if (!tStorage.m_bDirectMove)
-		{
-			// Only inject sidemove if actual strafe is happening (avoid bias on linear air movement)
-			if (fabsf(yawStep) >= 0.08f && fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
-				tStorage.m_MoveData.m_flSideMove = (yawStep >= 0.f ? 450.f : -450.f);
-		}
+			auto applyAdaptiveSidemove = [&](float desiredSign, bool groundMode, bool scheduled)
+			{
+				Vec3 vel2D = tStorage.m_MoveData.m_vecVelocity;
+				vel2D.z = 0.f;
+				float speed = vel2D.Length2D();
+				float maxSpeed = std::max(tStorage.m_MoveData.m_flMaxSpeed, 1.f);
+				float speedScale = std::clamp(speed / maxSpeed, 0.f, 1.25f);
 
-		if (tStorage.m_bDirectMove && bScheduledThisTick)
-		{
-			if (fabsf(tStorage.m_MoveData.m_flSideMove) < 50.f)
-				tStorage.m_MoveData.m_flSideMove = (tStorage.m_iYawSign >= 0 ? 450.f : -450.f);
-		}
+				float yawMag = fabsf(yawStep);
+				float refYaw = std::max(tStorage.m_flYawAbs, 0.08f);
+				float yawScale = std::clamp(yawMag / refYaw, 0.35f, 1.35f);
+
+				float baseMagnitude = 450.f * yawScale * (0.55f + 0.45f * speedScale);
+				if (!groundMode)
+					baseMagnitude = std::min(baseMagnitude, 380.f);
+				if (scheduled)
+					baseMagnitude *= 1.05f;
+				else if (groundMode)
+					baseMagnitude *= 0.90f;
+
+				float minMagnitude = groundMode ? 140.f : 110.f;
+				baseMagnitude = std::clamp(baseMagnitude, minMagnitude, groundMode ? 450.f : 380.f);
+
+				float targetSide = baseMagnitude * (desiredSign >= 0.f ? 1.f : -1.f);
+
+				if (fabsf(tStorage.m_MoveData.m_flSideMove) < minMagnitude * 0.5f)
+					tStorage.m_MoveData.m_flSideMove = targetSide;
+				else
+					tStorage.m_MoveData.m_flSideMove = Math::Lerp(tStorage.m_MoveData.m_flSideMove, targetSide, 0.5f);
+			};
+
+			if (tStorage.m_bDirectMove)
+			{
+				if (bScheduledThisTick)
+				{
+					float sign = (tStorage.m_iYawSign >= 0 ? 1.f : -1.f);
+					applyAdaptiveSidemove(sign, true, true);
+				}
+				else if (fabsf(yawStep) >= 0.04f)
+				{
+					float sign = (yawStep >= 0.f ? 1.f : -1.f);
+					applyAdaptiveSidemove(sign, true, false);
+				}
+			}
+			else if (fabsf(yawStep) >= 0.04f)
+			{
+				float sign = (yawStep >= 0.f ? 1.f : -1.f);
+				applyAdaptiveSidemove(sign, false, bScheduledThisTick);
+			}
 
 			DetectLedgeAndClamp(tStorage, yawStep);
 		}
