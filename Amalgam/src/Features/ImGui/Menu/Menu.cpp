@@ -272,7 +272,6 @@ void CMenu::MenuAimbot(int iTab)
 						FSlider(Vars::Aimbot::Projectile::AutoRelease);
 					}
 					PopTransparent();
-					// Feet targeting controls moved to Debug Projectile section
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -281,16 +280,6 @@ void CMenu::MenuAimbot(int iTab)
 						// General debug-only toggles
 						FToggle(Vars::Aimbot::Projectile::UseCurvatureFit, FToggleEnum::Left);
 						FToggle(Vars::Aimbot::Projectile::UseStabilityMinSamples, FToggleEnum::Right);
-
-						FText("\nFeet targeting");
-						FSlider(Vars::Aimbot::Projectile::FeetZBoostPipes, FSliderEnum::Left);
-						FToggle(Vars::Aimbot::Projectile::FeetZBoostPipesDynamic, FToggleEnum::Right);
-						PushTransparent(!Vars::Aimbot::Projectile::FeetZBoostPipesDynamic.Value);
-						{
-							FSlider(Vars::Aimbot::Projectile::FeetZBoostPipesDynScale, FSliderEnum::Left);
-							FSlider(Vars::Aimbot::Projectile::FeetZBoostPipesDynMax, FSliderEnum::Right);
-						}
-						PopTransparent();
 
 						FText("Ground");
 						FSlider(Vars::Aimbot::Projectile::GroundSamples, FSliderEnum::Left);

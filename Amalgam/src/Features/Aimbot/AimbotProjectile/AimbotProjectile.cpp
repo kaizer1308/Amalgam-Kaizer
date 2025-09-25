@@ -399,8 +399,12 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 		case BOUNDS_BODY: mPoints[iPriority] = Vec3(0, 0, (vMaxs.z - vMins.z) / 2); break;
 		case BOUNDS_FEET:
 		{
-			float flBase = Vars::Aimbot::Projectile::VerticalShift.Value;
-			float flZ = vMins.z + flBase;
+			const float flHullPadding = m_tInfo.m_vHull.z;
+			const float flPlayerHeight = vMaxs.z - vMins.z;
+			const float flBaseShift = std::max(Vars::Aimbot::Projectile::VerticalShift.Value, 3.f);
+			float flZ = vMins.z + flHullPadding + flBaseShift;
+			Vec3 vBias = {};
+
 			if (m_tInfo.m_pWeapon)
 			{
 				switch (m_tInfo.m_pWeapon->GetWeaponID())
@@ -408,34 +412,38 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 				case TF_WEAPON_GRENADELAUNCHER:
 				case TF_WEAPON_CANNON:
 				{
-					float flStatic = Vars::Aimbot::Projectile::FeetZBoostPipes.Value;
-					float flDyn = 0.f;
-					if (Vars::Aimbot::Projectile::FeetZBoostPipesDynamic.Value)
-					{
-						const Vec3 vLocalPos = F::Ticks.GetShootPos();
-						Vec3 vHoriz = vLocalPos - tTarget.m_vPos; vHoriz.z = 0.f;
-						const float flDist = vHoriz.Length();
-						const float flScale = Vars::Aimbot::Projectile::FeetZBoostPipesDynScale.Value; // units per 1000u
-						const float flMax = Vars::Aimbot::Projectile::FeetZBoostPipesDynMax.Value;
-						flDyn = std::min((flDist * 0.001f) * flScale, flMax);
-					}
-					flZ = vMins.z + std::max(flBase, flStatic + flDyn) + m_tInfo.m_vHull.z;
-					flZ = std::min(flZ, vMins.z + (vMaxs.z - vMins.z) * 0.6f);
+					const Vec3 vLocalPos = F::Ticks.GetShootPos();
+					const Vec3 vTargetPos = tTarget.m_vPos;
+					const Vec3 vDelta = vTargetPos - vLocalPos;
+					const float flSpeed = std::max(m_tInfo.m_flVelocity, 1.f);
+					const float flFlightTime = vDelta.Length() / flSpeed;
+					const float flGravity = m_tInfo.m_flGravity * 800.f;
+					const float flDropComp = 0.5f * flGravity * flFlightTime * flFlightTime;
 
-					Vec3 vDir = m_tInfo.m_vLocalEye - tTarget.m_vPos; vDir.z = 0.f;
-					float flDist2D = vDir.Length();
-					Vec3 vBias = {};
-					if (flDist2D > 1.f)
+					const float flMinFoot = vMins.z + flHullPadding + 1.5f;
+					const float flMaxFoot = vMins.z + flPlayerHeight * 0.7f;
+					flZ = std::clamp(flMinFoot + flBaseShift + std::clamp(flDropComp, 0.f, flPlayerHeight * 0.5f), flMinFoot, flMaxFoot);
+
+					Vec3 vLead = tTarget.m_pEntity->GetAbsVelocity() * flFlightTime;
+					vLead.z = 0.f;
+					if (!vLead.IsZero())
 					{
-						vDir /= flDist2D;
-						float flBias = std::clamp(flDist2D * 0.01f, 4.f, 12.f);
-						vBias = vDir * flBias;
-						vBias.x = std::clamp(vBias.x, vMins.x + 2.f, vMaxs.x - 2.f);
-						vBias.y = std::clamp(vBias.y, vMins.y + 2.f, vMaxs.y - 2.f);
+						const float flMaxLead = std::clamp(flPlayerHeight * 0.35f, 4.f, 10.f);
+						const float flLeadLen = vLead.Length2D();
+						if (flLeadLen > flMaxLead)
+							vLead *= flMaxLead / flLeadLen;
 					}
+
+					vBias = vLead;
+					vBias.x = std::clamp(vBias.x, vMins.x + 1.5f, vMaxs.x - 1.5f);
+					vBias.y = std::clamp(vBias.y, vMins.y + 1.5f, vMaxs.y - 1.5f);
+
 					mPoints[iPriority] = Vec3(vBias.x, vBias.y, flZ);
 					break;
 				}
+				default:
+					mPoints[iPriority] = Vec3(0, 0, flZ);
+					break;
 				}
 			}
 			else
